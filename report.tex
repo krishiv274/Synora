@@ -7,6 +7,7 @@
 \usepackage{hyperref}
 \usepackage{titlesec}
 \usepackage{setspace}
+\usepackage{float}
 
 \titleformat{\section}{\large\bfseries}{\thesection}{1em}{}
 
@@ -26,116 +27,150 @@ Syed Darain Qamar \\
 \maketitle
 \onehalfspacing
 
+% ------------------------------------------------
 \section{Problem Statement}
 
-The rapid adoption of Electric Vehicles (EVs) has outpaced the strategic planning of charging station infrastructure, leading to two primary issues: \textbf{Charging Demand Congestion} in high-traffic administrative zones and \textbf{Infrastructure Underutilization} in others.
-
-The goal of this project is to develop a predictive analytics system that forecasts \textbf{Occupancy (\%)} and \textbf{Charging Volume (kWh)} across urban charging networks. Accurate forecasting allows city planners to:
+The rapid adoption of Electric Vehicles (EVs) has outpaced charging infrastructure planning, resulting in congestion in high-demand zones and underutilization elsewhere. This project builds a predictive analytics system to forecast:
 
 \begin{itemize}
-    \item Optimize the placement of new charging piles.
-    \item Manage grid load dynamically based on predicted demand.
-    \item Reduce waiting times for EV users by identifying peak congestion windows.
+    \item Occupancy (\%)
+    \item Charging Volume (kWh)
 \end{itemize}
 
+The goal is to support intelligent infrastructure expansion and congestion mitigation.
+
+% ------------------------------------------------
 \section{Data Description}
 
-The project utilizes the \textbf{UrbanEV Dataset}, focusing on urban charging infrastructure in Shenzhen, China.
-
-\textbf{Scope:}
-\begin{itemize}
-    \item 275 administrative zones (TAZs)
-    \item 1,362 charging stations
-    \item 17,532 charging piles
-\end{itemize}
-
-\textbf{Timeframe:} September 1, 2022 – February 28, 2023 (Hourly Resolution)
-
-\textbf{Key Features:}
-\begin{itemize}
-    \item Usage Metrics: Occupancy (\%), Volume (kWh), Charging Duration
-    \item Pricing: Electricity Price, Service Price
-    \item Metadata: Zone Area, Piles Count, Latitude/Longitude
-    \item Temporal Data: Hour, Weekday, Seasonal Indicators
-\end{itemize}
-
-\section{Exploratory Data Analysis (EDA)}
-
-Key insights from the data:
+Dataset: \textbf{UrbanEV (Shenzhen, China)}
 
 \begin{itemize}
-    \item \textbf{Temporal Stationarity:} Strong diurnal patterns with peaks during late-night and midday hours.
-    \item \textbf{Data Integrity:} 0\% missing values across core time-series columns.
-    \item \textbf{Congestion Variance:} Average occupancy ~17.87\%, while commercial zones exceed 80\%.
-    \item \textbf{Correlation:} Strong relationship between Occupancy and Total Price, suggesting price elasticity.
+\item 275 Travel Analysis Zones
+\item 1,362 charging stations
+\item 17,532 charging piles
+\item Timeframe: Sept 2022 – Feb 2023 (Hourly)
 \end{itemize}
 
+% ------------------------------------------------
 \section{Methodology}
 
-An ensemble learning framework was implemented to forecast dual targets: Occupancy and Volume.
+We implemented an ensemble learning framework using:
 
-\textbf{Models Used:}
 \begin{itemize}
-    \item Random Forest
-    \item XGBoost
-    \item LightGBM
+\item Random Forest
+\item XGBoost
+\item LightGBM
 \end{itemize}
 
-\textbf{Feature Engineering:}
-\begin{itemize}
-    \item Lag Features: 1h, 3h, 6h, 12h, 24h, 168h
-    \item Cyclical Encoding: Sine/Cosine transformations for Hour and DayOfWeek
-    \item Moving Averages: 6h, 12h, 24h rolling means
-\end{itemize}
+\subsection{Feature Engineering}
 
-\textbf{Training Strategy:}
-Time-based split:
-\begin{itemize}
-    \item Training: September – January
-    \item Testing: February
-\end{itemize}
+\textbf{Lag Features:}
+1h, 3h, 6h, 12h, 24h, 168h
 
-\section{Evaluation}
+\textbf{Cyclical Encoding (4 features)}
 
-Models were evaluated using MAE, RMSE, and $R^2$ on the February 2023 test set.
+To preserve the circular nature of time:
 
-\begin{table}[h]
+\begin{equation}
+\text{hour\_sin} = \sin\left(\frac{2\pi \cdot hour}{24}\right)
+\end{equation}
+
+\begin{equation}
+\text{hour\_cos} = \cos\left(\frac{2\pi \cdot hour}{24}\right)
+\end{equation}
+
+\begin{equation}
+\text{dow\_sin} = \sin\left(\frac{2\pi \cdot day\_of\_week}{7}\right)
+\end{equation}
+
+\begin{equation}
+\text{dow\_cos} = \cos\left(\frac{2\pi \cdot day\_of\_week}{7}\right)
+\end{equation}
+
+% ------------------------------------------------
+\section{Evaluation Metrics}
+
+Four metrics were used:
+
+\subsection*{Mean Absolute Error (MAE)}
+\[
+MAE = \frac{1}{n}\sum_{i=1}^{n} |y_i - \hat{y}_i|
+\]
+
+\subsection*{Root Mean Square Error (RMSE)}
+\[
+RMSE = \sqrt{\frac{1}{n}\sum_{i=1}^{n}(y_i - \hat{y}_i)^2}
+\]
+
+\subsection*{$R^2$ Score}
+\[
+R^2 = 1 - \frac{\sum (y_i - \hat{y}_i)^2}{\sum (y_i - \bar{y})^2}
+\]
+
+\subsection*{Mean Absolute Percentage Error (MAPE)}
+\[
+MAPE = \frac{100}{n} \sum_{i=1}^{n} \left| \frac{y_i - \hat{y}_i}{y_i} \right|
+\]
+
+% ------------------------------------------------
+\section{Results}
+
+\subsection{Model Performance (Occupancy)}
+
+\begin{figure}[H]
 \centering
-\begin{tabular}{l l c c}
-\toprule
-\textbf{Target} & \textbf{Model} & \textbf{$R^2$ Score} & \textbf{MAE} \\
-\midrule
-Occupancy (\%) & LightGBM & 0.9999 & 0.0553 \\
-Occupancy (\%) & Random Forest & 0.9999 & 0.0074 \\
-Volume (kWh) & XGBoost & 0.9604 & 44.25 \\
-Volume (kWh) & LightGBM & 0.9599 & 43.84 \\
-\bottomrule
-\end{tabular}
-\end{table}
+\includegraphics[width=\textwidth]{results/charts/chart_01_model_comparison_occupancy.png}
+\caption{R$^2$ and MAE comparison across models}
+\end{figure}
 
-\textbf{Note:} The high $R^2$ for occupancy is influenced by the inclusion of 1-hour lag features.
+\subsection{Hourly Occupancy Pattern}
 
-\section{Optimization}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{results/charts/chart_16_hourly_pattern_occupancy.png}
+\caption{Average hourly occupancy across all zones}
+\end{figure}
 
-Performance improvements included:
+\subsection{Model Predictions vs Actual}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{results/charts/chart_04_actual_vs_predicted_timeseries.png}
+\caption{Model predictions compared with actual occupancy}
+\end{figure}
+
+% ------------------------------------------------
+\section{Optimization Techniques}
 
 \begin{itemize}
-    \item \textbf{Hyperparameter Tuning:} Grid Search optimization (e.g., LightGBM at 800 estimators, 31 leaves).
-    \item \textbf{Memory Optimization:} Dataset reshaped to long-format panel structure using \texttt{int8} and \texttt{float32}.
-    \item \textbf{Cross-Variable Lags:} 24-hour volume lag added to improve occupancy prediction.
+\item Grid Search Hyperparameter Tuning
+\item Memory optimization using int8 and float32
+\item Cross-variable lag features
 \end{itemize}
 
+% ------------------------------------------------
 \section{Team Contributions}
 
 \begin{itemize}
-    \item \textbf{Krishiv Gupta (Project Lead):} Identified and sourced the UrbanEV dataset; implemented and trained machine learning models.
-    \item \textbf{Hardik Hathwal:} Led data preprocessing, cleaning, and transformation pipeline; assisted in evaluation metric computation.
-    \item \textbf{Kabir Sharma:} Contributed to data preprocessing, feature preparation, and performance evaluation.
-    \item \textbf{Syed Darain Qamar:} Designed and developed the user interface (UI) for analytics visualization; structured and authored the final project report.
+\item \textbf{Krishiv Gupta (Project Lead):} Dataset sourcing and model training.
+\item \textbf{Hardik Hathwal:} Data preprocessing and evaluation metrics.
+\item \textbf{Kabir Sharma:} Data preprocessing and performance analysis.
+\item \textbf{Syed Darain Qamar:} UI development and report preparation.
 \end{itemize}
 
+% ------------------------------------------------
 \section{Conclusion}
 
-Synora demonstrates how AI-driven predictive modeling can enhance urban EV infrastructure planning. By leveraging ensemble learning, feature engineering, and temporal modeling, the system enables intelligent decision-making for congestion management, grid optimization, and infrastructure expansion.
+Synora demonstrates how ensemble machine learning models combined with time-aware feature engineering can significantly improve EV demand forecasting accuracy. The system enables smarter urban infrastructure planning and congestion mitigation.
+
+% ------------------------------------------------
+\section*{References}
+
+\begin{enumerate}
+\item Li, H., et al. (2025). \textit{UrbanEV: An open benchmark dataset for urban electric vehicle charging demand prediction}. Scientific Data.
+\item Chen, T., \& Guestrin, C. (2016). \textit{XGBoost: A Scalable Tree Boosting System}. KDD.
+\item Ke, G., et al. (2017). \textit{LightGBM: A Highly Efficient Gradient Boosting Decision Tree}. NeurIPS.
+\item Breiman, L. (2001). \textit{Random Forests}. Machine Learning.
+\end{enumerate}
 
 \end{document}
