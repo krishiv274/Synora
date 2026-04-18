@@ -677,14 +677,27 @@ Format your response as:
             {"question": query, "context": context_str}
         )
         # Override with richer prompt if chain supports it
-        from langchain_anthropic import ChatAnthropic
-        from langchain_openai import ChatOpenAI
         from langchain_core.messages import HumanMessage, SystemMessage
         llm_instance = chain.steps[0] if hasattr(chain, "steps") else None
 
         # Direct call for richer prompt
-        provider = os.getenv("MODEL_PROVIDER", "anthropic").lower()
-        if provider == "anthropic":
+        provider = os.getenv("MODEL_PROVIDER", "groq").lower()
+        if provider == "groq":
+            api_key = os.getenv("GROQ_API_KEY", "")
+            if api_key:
+                from groq import Groq
+                client = Groq(api_key=api_key)
+                resp = client.chat.completions.create(
+                    model="llama-3.3-70b-versatile",
+                    messages=[
+                        {"role": "system", "content": SYSTEM_PROMPT},
+                        {"role": "user", "content": full_prompt},
+                    ],
+                    max_tokens=2500,
+                    temperature=0.3,
+                )
+                recommendation = resp.choices[0].message.content
+        elif provider == "anthropic":
             api_key = os.getenv("ANTHROPIC_API_KEY", "")
             if api_key:
                 from anthropic import Anthropic
@@ -807,7 +820,7 @@ def _rule_based_recommendation(
         "",
         "## CONFIDENCE & UNCERTAINTY",
         "⚠️ This is a rule-based fallback recommendation (LLM API not configured). "
-        "Set ANTHROPIC_API_KEY or OPENAI_API_KEY for AI-powered recommendations.",
+        "Set GROQ_API_KEY (free) or ANTHROPIC_API_KEY or OPENAI_API_KEY for AI-powered recommendations.",
     ]
 
     return "\n".join(lines)
@@ -894,9 +907,10 @@ def report_generator(state: SynoraState) -> dict[str, Any]:
         "model_info": {
             "framework": "LangGraph + LangChain + ChromaDB",
             "embedding_model": "all-MiniLM-L6-v2",
-            "llm_provider": os.getenv("MODEL_PROVIDER", "anthropic"),
-            "llm_model": os.getenv("MODEL_PROVIDER", "anthropic") == "anthropic"
-                and "claude-sonnet-4-20250514" or "gpt-4o",
+            "llm_provider": os.getenv("MODEL_PROVIDER", "groq"),
+            "llm_model": {"groq": "llama-3.3-70b-versatile", "anthropic": "claude-sonnet-4-20250514", "openai": "gpt-4o"}.get(
+                os.getenv("MODEL_PROVIDER", "groq").lower(), "llama-3.3-70b-versatile"
+            ),
         },
     }
 

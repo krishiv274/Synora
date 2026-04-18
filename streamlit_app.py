@@ -1174,13 +1174,20 @@ def page_agentic_planner():
 
     section_header(
         "🤖 Agentic Planner",
-        "LangGraph · ChromaDB RAG · Claude claude-sonnet-4-20250514 — AI-powered EV infrastructure planning",
+        "LangGraph · ChromaDB RAG · Groq Llama 3.3 — AI-powered EV infrastructure planning",
     )
 
     # ── Sidebar API key config ──
     with st.sidebar:
         st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
         with st.expander("🔑 API Keys", expanded=False):
+            groq_key = st.text_input(
+                "Groq API Key (free)",
+                value=os.getenv("GROQ_API_KEY", ""),
+                type="password",
+                key="ap_groq_key",
+                help="Free key — get one at https://console.groq.com",
+            )
             anthropic_key = st.text_input(
                 "Anthropic API Key",
                 value=os.getenv("ANTHROPIC_API_KEY", ""),
@@ -1189,7 +1196,7 @@ def page_agentic_planner():
                 help="Required for Claude claude-sonnet-4-20250514",
             )
             openai_key = st.text_input(
-                "OpenAI API Key (fallback)",
+                "OpenAI API Key",
                 value=os.getenv("OPENAI_API_KEY", ""),
                 type="password",
                 key="ap_openai_key",
@@ -1197,10 +1204,12 @@ def page_agentic_planner():
             )
             provider = st.selectbox(
                 "LLM Provider",
-                ["anthropic", "openai"],
+                ["groq", "anthropic", "openai"],
                 index=0,
                 key="ap_provider",
             )
+            if groq_key:
+                os.environ["GROQ_API_KEY"] = groq_key
             if anthropic_key:
                 os.environ["ANTHROPIC_API_KEY"] = anthropic_key
             if openai_key:

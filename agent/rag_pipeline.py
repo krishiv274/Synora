@@ -7,13 +7,14 @@ Builds a retrieval-augmented generation (RAG) chain that:
   3. Injects them into a structured LLM prompt.
   4. Returns a grounded answer with source citations.
 
-Supports Anthropic Claude (default) or OpenAI via MODEL_PROVIDER env var.
+Supports Groq (default, free), Anthropic Claude, or OpenAI via MODEL_PROVIDER env var.
 
 Environment variables
 ---------------------
-ANTHROPIC_API_KEY  — required when MODEL_PROVIDER=anthropic (default)
+GROQ_API_KEY       — required when MODEL_PROVIDER=groq (default, free)
+ANTHROPIC_API_KEY  — required when MODEL_PROVIDER=anthropic
 OPENAI_API_KEY     — required when MODEL_PROVIDER=openai
-MODEL_PROVIDER     — "anthropic" (default) or "openai"
+MODEL_PROVIDER     — "groq" (default), "anthropic", or "openai"
 """
 
 from __future__ import annotations
@@ -29,7 +30,8 @@ logger = logging.getLogger(__name__)
 # ── Constants ────────────────────────────────────────────────────────────────
 ANTHROPIC_MODEL = "claude-sonnet-4-20250514"
 OPENAI_MODEL = "gpt-4o"
-DEFAULT_PROVIDER = "anthropic"
+GROQ_MODEL = "llama-3.3-70b-versatile"
+DEFAULT_PROVIDER = "groq"
 
 _RAG_CHAIN_CACHE: Any | None = None
 
@@ -77,23 +79,38 @@ def _get_llm() -> Any:
     Returns
     -------
     langchain_core.language_models.BaseChatModel
-        Either a ChatAnthropic or ChatOpenAI instance.
+        A ChatGroq, ChatAnthropic, or ChatOpenAI instance.
 
     Raises
     ------
     EnvironmentError
         If the required API key is not set.
     ValueError
-        If MODEL_PROVIDER is not "anthropic" or "openai".
+        If MODEL_PROVIDER is not "groq", "anthropic", or "openai".
     """
     provider = os.getenv("MODEL_PROVIDER", DEFAULT_PROVIDER).lower()
+
+    if provider == "groq":
+        api_key = os.getenv("GROQ_API_KEY", "")
+        if not api_key:
+            raise EnvironmentError(
+                "GROQ_API_KEY environment variable is not set. "
+                "Get a free key at https://console.groq.com"
+            )
+        from langchain_groq import ChatGroq
+        return ChatGroq(
+            model=GROQ_MODEL,
+            api_key=api_key,
+            max_tokens=2048,
+            temperature=0.3,
+        )
 
     if provider == "anthropic":
         api_key = os.getenv("ANTHROPIC_API_KEY", "")
         if not api_key:
             raise EnvironmentError(
                 "ANTHROPIC_API_KEY environment variable is not set. "
-                "Set it or use MODEL_PROVIDER=openai with OPENAI_API_KEY."
+                "Set it or use MODEL_PROVIDER=groq with GROQ_API_KEY."
             )
         from langchain_anthropic import ChatAnthropic
         return ChatAnthropic(
@@ -118,7 +135,7 @@ def _get_llm() -> Any:
         )
 
     raise ValueError(
-        f"Unknown MODEL_PROVIDER='{provider}'. Use 'anthropic' or 'openai'."
+        f"Unknown MODEL_PROVIDER='{provider}'. Use 'groq', 'anthropic', or 'openai'."
     )
 
 
@@ -224,8 +241,8 @@ def ask(
     except EnvironmentError as exc:
         answer = (
             f"⚠️ LLM API key not configured: {exc}\n\n"
-            "To enable AI recommendations, set ANTHROPIC_API_KEY or OPENAI_API_KEY "
-            "in your environment and set MODEL_PROVIDER accordingly.\n\n"
+            "To enable AI recommendations, set GROQ_API_KEY (free), ANTHROPIC_API_KEY, "
+            "or OPENAI_API_KEY in your environment and set MODEL_PROVIDER accordingly.\n\n"
             f"Retrieved context summary:\n{context_str[:1000]}…"
         )
         logger.warning("LLM not available: %s", exc)
