@@ -29,11 +29,11 @@ PATHS = {
 SPLIT_DATE = pd.Timestamp("2023-02-01")
 
 FEATURE_COLS = [
-    'longitude', 'latitude', 'charge_count', 'area', 'perimeter',
+    'longitude', 'latitude', 'area', 'perimeter',
     'num_stations', 'total_piles', 'mean_station_lat', 'mean_station_lon',
     'hour', 'day_of_week', 'month', 'day_of_month', 'is_weekend',
     'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
-    'charge_density', 'total_price',
+    'total_price',
     'occ_lag_1h', 'occ_lag_3h', 'occ_lag_6h', 'occ_lag_12h',
     'occ_lag_24h', 'occ_lag_168h', 'vol_lag_24h',
     'occ_rmean_6h', 'occ_rmean_12h', 'occ_rmean_24h',
@@ -226,8 +226,13 @@ def load_models():
         models[mn] = {}
         for tgt in ["occupancy", "volume"]:
             p = PATHS["models_dir"] / f"{fk}_{tgt}.pkl"
-            if p.exists():
-                models[mn][tgt] = joblib.load(p)
+            if p.exists() and p.stat().st_size > 500:
+                try:
+                    models[mn][tgt] = joblib.load(p)
+                except Exception:
+                    models[mn][tgt] = None
+            else:
+                models[mn][tgt] = None
     return models
 
 
@@ -288,7 +293,18 @@ def load_fi():
 
 @st.cache_data(show_spinner=False)
 def load_zones():
-    return pd.read_csv(PATHS["zones"])
+    p = PATHS["zones"]
+    if p.exists() and p.stat().st_size > 500:
+        return pd.read_csv(p)
+    else:
+        # Graceful fallback: derive zone metadata from processed dataset if LFS stub
+        try:
+            from agent.rag_engine import _load_zone_profiles
+            zp = _load_zone_profiles()
+            # Streamlit app expects 'TAZID' instead of 'zone_id' from the raw file
+            return zp.rename(columns={"zone_id": "TAZID"})
+        except Exception:
+            return pd.DataFrame({"TAZID": []})
 
 
 @st.cache_data(show_spinner=False)
@@ -399,7 +415,8 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     NAV_PAGES = ["Overview", "Model Comparison", "Predictions Explorer",
-                 "Feature Importance", "Zone Analysis", "About"]
+                 "Feature Importance", "Zone Analysis", "About",
+                 "🤖 Agentic Planner"]
     page = st.radio(
         "Nav",
         NAV_PAGES,
@@ -1092,6 +1109,527 @@ Predictions are made at **hourly granularity** across **275 traffic analysis zon
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PAGE: Agentic Planner
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def page_agentic_planner():
+    """Agentic Planner page — LangGraph + RAG infrastructure planning assistant."""
+    import json
+    import threading
+    import time as _time
+    import os
+
+    # ── Additional CSS for agent page ──
+    st.markdown("""
+    <style>
+    .agent-step {
+        display:flex; align-items:flex-start; gap:0.75rem;
+        padding:0.65rem 1rem;
+        border-radius:12px;
+        border:1px solid rgba(255,255,255,0.06);
+        margin-bottom:0.5rem;
+        background:rgba(255,255,255,0.02);
+        animation: fadeIn 0.4s ease;
+    }
+    .agent-step.running {
+        border-color:rgba(108,99,255,0.35);
+        background:rgba(108,99,255,0.06);
+    }
+    .agent-step.done {
+        border-color:rgba(0,201,167,0.25);
+        background:rgba(0,201,167,0.04);
+    }
+    .agent-step.error {
+        border-color:rgba(255,107,107,0.35);
+        background:rgba(255,107,107,0.06);
+    }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:translateY(0); } }
+    .anomaly-badge {
+        display:inline-block;
+        padding:0.2rem 0.7rem;
+        border-radius:20px;
+        font-size:0.75rem;
+        font-weight:700;
+        margin-right:0.3rem;
+    }
+    .badge-critical { background:rgba(255,107,107,0.2); color:#FF6B6B; border:1px solid rgba(255,107,107,0.4); }
+    .badge-high     { background:rgba(255,193,7,0.18);  color:#FFC107; border:1px solid rgba(255,193,7,0.35); }
+    .badge-medium   { background:rgba(108,99,255,0.18); color:#8C85FF; border:1px solid rgba(108,99,255,0.35); }
+    .rec-box {
+        background:linear-gradient(135deg,rgba(108,99,255,0.08),rgba(0,201,167,0.05));
+        border:1px solid rgba(108,99,255,0.2);
+        border-radius:16px;
+        padding:1.5rem 2rem;
+        margin-top:1rem;
+    }
+    .review-gate {
+        background:linear-gradient(135deg,rgba(255,193,7,0.1),rgba(255,107,107,0.07));
+        border:2px solid rgba(255,193,7,0.4);
+        border-radius:16px;
+        padding:1.5rem;
+        margin:1rem 0;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    section_header(
+        "🤖 Agentic Planner",
+        "LangGraph · ChromaDB RAG · Groq Llama 3.3 — AI-powered EV infrastructure planning",
+    )
+
+    # ── Sidebar API key config ──
+    with st.sidebar:
+        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
+        with st.expander("🔑 API Keys", expanded=False):
+            groq_key = st.text_input(
+                "Groq API Key (free)",
+                value=os.getenv("GROQ_API_KEY", ""),
+                type="password",
+                key="ap_groq_key",
+                help="Free key — get one at https://console.groq.com",
+            )
+            anthropic_key = st.text_input(
+                "Anthropic API Key",
+                value=os.getenv("ANTHROPIC_API_KEY", ""),
+                type="password",
+                key="ap_anthropic_key",
+                help="Required for Claude claude-sonnet-4-20250514",
+            )
+            openai_key = st.text_input(
+                "OpenAI API Key",
+                value=os.getenv("OPENAI_API_KEY", ""),
+                type="password",
+                key="ap_openai_key",
+                help="Used when MODEL_PROVIDER=openai",
+            )
+            provider = st.selectbox(
+                "LLM Provider",
+                ["groq", "anthropic", "openai"],
+                index=0,
+                key="ap_provider",
+            )
+            if groq_key:
+                os.environ["GROQ_API_KEY"] = groq_key
+            if anthropic_key:
+                os.environ["ANTHROPIC_API_KEY"] = anthropic_key
+            if openai_key:
+                os.environ["OPENAI_API_KEY"] = openai_key
+            os.environ["MODEL_PROVIDER"] = provider
+
+    # ── Initialise session state ──
+    for k, v in [
+        ("ap_result", None),
+        ("ap_running", False),
+        ("ap_trace", []),
+        ("ap_approved", False),
+        ("ap_query", ""),
+        ("_ap_load_example", None),
+    ]:
+        if k not in st.session_state:
+            st.session_state[k] = v
+
+    # ── Flush pending example query BEFORE the text_input renders ──
+    # (Streamlit forbids writing to a widget key after it's instantiated)
+    if st.session_state["_ap_load_example"] is not None:
+        st.session_state["ap_query_input"] = st.session_state["_ap_load_example"]
+        st.session_state["_ap_load_example"] = None
+
+    # ── Query input ──
+    col_i, col_b = st.columns([5, 1])
+    with col_i:
+        query = st.text_input(
+            "Describe your planning query",
+            placeholder="e.g. Plan infrastructure for high-demand zones next weekend",
+            key="ap_query_input",
+            label_visibility="collapsed",
+        )
+    with col_b:
+        run_btn = st.button(
+            "▶ Run Agent",
+            type="primary",
+            disabled=st.session_state.ap_running,
+            use_container_width=True,
+            key="ap_run_btn",
+        )
+
+    # ── Example queries ──
+    examples = [
+        "Plan infrastructure for high-demand zones next weekend",
+        "Which zones in Shenzhen need additional charging stations next month?",
+        "Identify zones at risk of congestion tomorrow and recommend interventions",
+        "Optimise EV charging capacity for zones 106 and 107",
+    ]
+    st.markdown(
+        "<div style='font-size:0.78rem;opacity:0.45;margin-bottom:0.3rem;'>Quick examples:</div>",
+        unsafe_allow_html=True,
+    )
+    ex_cols = st.columns(len(examples))
+    for i, ex in enumerate(examples):
+        with ex_cols[i]:
+            if st.button(
+                ex[:42] + "…" if len(ex) > 42 else ex,
+                key=f"ap_ex_{i}",
+                use_container_width=True,
+            ):
+                # Store in intermediate key — flushed to ap_query_input
+                # at the TOP of next run, before the widget is created
+                st.session_state["_ap_load_example"] = ex
+                st.session_state["ap_result"] = None
+                st.session_state["ap_trace"] = []
+                st.rerun()
+
+    st.divider()
+
+    # ── Run agent ──
+    effective_query = query or st.session_state.get("ap_query", "")
+    if run_btn and effective_query:
+        st.session_state.ap_running = True
+        st.session_state.ap_result = None
+        st.session_state.ap_trace = []
+        st.session_state.ap_approved = False
+        st.session_state.ap_query = effective_query
+        st.rerun()
+
+    # ── Actual agent execution (runs on first rerun after button press) ──
+    if st.session_state.ap_running and st.session_state.ap_result is None:
+        trace_container = st.container()
+        trace_placeholder = trace_container.empty()
+
+        with st.spinner("🤖 Agent is thinking …"):
+            try:
+                # Import here to avoid top-level import errors if deps missing
+                from agent.graph import run_agent_streaming
+
+                live_trace: list[str] = []
+                final_state = {}
+
+                NODE_ICONS = {
+                    "demand_forecaster": "🔮",
+                    "anomaly_detector":  "🚨",
+                    "rag_retriever":     "📚",
+                    "planning_agent":    "🤖",
+                    "report_generator":  "📄",
+                    "human_review_gate": "🔍",
+                }
+
+                for node_name, node_output in run_agent_streaming(
+                    st.session_state.ap_query,
+                    approved=st.session_state.ap_approved,
+                ):
+                    final_state.update(node_output)
+                    icon = NODE_ICONS.get(node_name, "⚙️")
+                    step_msg = f"{icon} <b>{node_name.replace('_', ' ').title()}</b> — completed"
+                    live_trace.append(step_msg)
+
+                    # Render live trace
+                    html_steps = "".join(
+                        f'<div class="agent-step done">{s}</div>'
+                        for s in live_trace
+                    )
+                    trace_placeholder.markdown(
+                        f"<div>{html_steps}</div>", unsafe_allow_html=True
+                    )
+
+                st.session_state.ap_result = final_state
+                st.session_state.ap_trace = live_trace
+
+            except ImportError as ie:
+                st.error(
+                    f"⚠️ Agent dependencies not installed: {ie}\n\n"
+                    "Run: `pip install langgraph langchain langchain-anthropic "
+                    "langchain-openai chromadb sentence-transformers anthropic`"
+                )
+            except Exception as e:
+                st.session_state.ap_result = "ERROR" # To stop retriggering loop
+                st.error(f"Agent error: {e}")
+            finally:
+                st.session_state.ap_running = False
+                if st.session_state.ap_result != "ERROR":
+                    st.rerun()
+
+    # ── Display results ──
+    if st.session_state.ap_result is not None and st.session_state.ap_result != "ERROR":
+        result = st.session_state.ap_result
+
+        # ── Agent trace ──
+        st.markdown("#### 🧭 Agent Step Trace")
+        if st.session_state.ap_trace:
+            html_steps = "".join(
+                f'<div class="agent-step done">{s}</div>'
+                for s in st.session_state.ap_trace
+            )
+            st.markdown(f"<div>{html_steps}</div>", unsafe_allow_html=True)
+        else:
+            for msg in result.get("agent_trace", []):
+                st.markdown(
+                    f'<div class="agent-step done">{msg}</div>',
+                    unsafe_allow_html=True,
+                )
+
+        st.divider()
+
+        # ── KPI strip ──
+        report = result.get("report", {})
+        stats = report.get("summary_statistics", {})
+        anomalies = result.get("anomalies", [])
+        predictions = result.get("predictions", {})
+        rag_sources = result.get("rag_sources", [])
+        recommendation = result.get("recommendation", "")
+
+        k1, k2, k3, k4, k5 = st.columns(5)
+        k1.metric("Zones Analysed", len(predictions))
+        k2.metric("Avg Occupancy", f"{stats.get('avg_predicted_occupancy_pct', 0):.1f}%")
+        k3.metric("Max Occupancy", f"{stats.get('max_predicted_occupancy_pct', 0):.1f}%")
+        k4.metric("Zones at Risk", stats.get("zones_at_risk", 0))
+        k5.metric("RAG Sources", len(rag_sources))
+
+        st.divider()
+
+        # ── Demand heatmap ──
+        st.markdown("#### 📊 Predicted Demand by Zone")
+        if predictions:
+            hm_data = pd.DataFrame([
+                {
+                    "Zone": f"Zone {z}",
+                    "Occupancy (%)": v["occupancy"],
+                    "Volume (kWh)": v["volume"],
+                    "Surge (%)": round(
+                        (v["occupancy"] - v["occ_baseline"]) / max(v["occ_baseline"], 1) * 100, 1
+                    ),
+                    "At Risk": z in {a["zone_id"] for a in anomalies},
+                }
+                for z, v in predictions.items()
+            ]).sort_values("Occupancy (%)", ascending=False)
+
+            hm_cols = st.columns(2)
+            with hm_cols[0]:
+                fig_occ = go.Figure(go.Bar(
+                    x=hm_data["Zone"],
+                    y=hm_data["Occupancy (%)"],
+                    marker=dict(
+                        color=hm_data["Occupancy (%)"],
+                        colorscale=[[0, "#1a1040"], [0.5, "#6C63FF"], [1, "#FF6B6B"]],
+                        line=dict(width=0),
+                    ),
+                    text=[f"{v:.0f}%" for v in hm_data["Occupancy (%)"]],
+                    textposition="outside",
+                ))
+                styled_fig(fig_occ, "Predicted Occupancy by Zone (%)", height=340)
+                fig_occ.update_xaxes(tickangle=-45)
+                st.plotly_chart(fig_occ, key="ap_occ_bar", use_container_width=True)
+
+            with hm_cols[1]:
+                fig_vol = go.Figure(go.Bar(
+                    x=hm_data["Zone"],
+                    y=hm_data["Volume (kWh)"],
+                    marker=dict(
+                        color=hm_data["Volume (kWh)"],
+                        colorscale=[[0, "#1a1040"], [0.5, "#00C9A7"], [1, "#FFD93D"]],
+                        line=dict(width=0),
+                    ),
+                    text=[f"{v:.0f}" for v in hm_data["Volume (kWh)"]],
+                    textposition="outside",
+                ))
+                styled_fig(fig_vol, "Predicted Volume by Zone (kWh)", height=340)
+                fig_vol.update_xaxes(tickangle=-45)
+                st.plotly_chart(fig_vol, key="ap_vol_bar", use_container_width=True)
+
+            # Surge scatter
+            st.markdown("##### Demand Surge vs Baseline")
+            fig_surge = go.Figure()
+            colors = ["#FF6B6B" if r else "#6C63FF" for r in hm_data["At Risk"]]
+            fig_surge.add_trace(go.Bar(
+                x=hm_data["Zone"],
+                y=hm_data["Surge (%)"],
+                marker=dict(color=colors, line=dict(width=0)),
+                text=[f"{v:+.0f}%" for v in hm_data["Surge (%)"]],
+                textposition="outside",
+            ))
+            fig_surge.add_hline(
+                y=40,
+                line=dict(color="rgba(255,193,7,0.6)", dash="dash", width=1.5),
+                annotation_text="Review threshold (40%)",
+                annotation_position="right",
+            )
+            styled_fig(fig_surge, "Demand Surge vs Historical Baseline", height=300)
+            fig_surge.update_xaxes(tickangle=-45)
+            st.plotly_chart(fig_surge, key="ap_surge", use_container_width=True)
+
+        st.divider()
+
+        # ── Anomaly alerts ──
+        st.markdown("#### 🚨 Anomaly Alerts")
+        if anomalies:
+            for a in sorted(anomalies, key=lambda x: x.get("occupancy", 0), reverse=True):
+                sev = a.get("severity", "medium")
+                badge_cls = f"badge-{sev}"
+                surge_str = f"+{a.get('occ_pct_change', 0):.1f}%"
+                st.markdown(
+                    f"""
+                    <div class="agent-step error" style="border-color:{'rgba(255,107,107,0.4)' if sev=='critical' else 'rgba(255,193,7,0.4)' if sev=='high' else 'rgba(108,99,255,0.35)'}">
+                        <div>
+                            <span class="anomaly-badge {badge_cls}">{sev.upper()}</span>
+                            <b>Zone {a['zone_id']}</b> — Occupancy: <b>{a['occupancy']:.1f}%</b>&nbsp;
+                            (surge {surge_str}) · Volume: {a['volume']:.1f} kWh<br>
+                            <span style="font-size:0.82rem;opacity:0.7;">{a['reason']}</span>
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+        else:
+            st.success("✅ No anomalous zones detected at current thresholds.")
+
+        st.divider()
+
+        # ── RAG sources ──
+        with st.expander(f"📚 RAG Knowledge Base Sources ({len(rag_sources)} documents retrieved)"):
+            rag_context = result.get("rag_context", [])
+            for i, (src, ctx) in enumerate(zip(rag_sources, rag_context)):
+                st.markdown(
+                    f"""
+                    <div class="glass-card" style="margin-bottom:0.6rem;">
+                        <div style="font-size:0.72rem;opacity:0.5;margin-bottom:0.3rem;">Source [{i+1}]: <code>{src}</code></div>
+                        <div style="font-size:0.85rem;line-height:1.6;opacity:0.85;">{ctx[:400]}{'…' if len(ctx)>400 else ''}</div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
+
+        st.divider()
+
+        # ── Human review gate ──
+        needs_review = result.get("needs_human_review", False)
+        if needs_review and not st.session_state.ap_approved:
+            st.markdown(
+                """
+                <div class="review-gate">
+                    <div style="font-size:1.1rem;font-weight:800;color:#FFC107;margin-bottom:0.5rem;">
+                        ⚠️ Human Approval Required
+                    </div>
+                    <div style="font-size:0.9rem;opacity:0.85;">
+                        This recommendation triggered the human review gate because:<br>
+                        • Predicted demand surge exceeds 40% above baseline, OR<br>
+                        • Recommendation involves adding more than 10 charging piles in a single zone, OR<br>
+                        • 5+ critical anomalies detected.<br><br>
+                        Please review the recommendation below before approving.
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+            ap_col1, ap_col2 = st.columns(2)
+            with ap_col1:
+                if st.button(
+                    "✅ Approve & Finalise Report",
+                    type="primary",
+                    key="ap_approve_btn",
+                    use_container_width=True,
+                ):
+                    st.session_state.ap_approved = True
+                    # Rerun agent with approved=True
+                    st.session_state.ap_running = True
+                    st.session_state.ap_result = None
+                    st.rerun()
+            with ap_col2:
+                if st.button(
+                    "❌ Reject Recommendation",
+                    type="secondary",
+                    key="ap_reject_btn",
+                    use_container_width=True,
+                ):
+                    st.session_state.ap_result = None
+                    st.session_state.ap_trace = []
+                    st.session_state.ap_approved = False
+                    st.warning("Recommendation rejected. Please refine your query and try again.")
+                    st.rerun()
+        elif needs_review and st.session_state.ap_approved:
+            st.success("✅ Recommendation approved by human reviewer.")
+
+        # ── Final recommendation ──
+        st.markdown("#### 🏗️ Infrastructure Recommendation")
+        if recommendation:
+            st.markdown(
+                f'<div class="rec-box">{recommendation.replace(chr(10), "<br>") if "<br>" not in recommendation else recommendation}</div>',
+                unsafe_allow_html=True,
+            )
+        else:
+            st.info("No recommendation generated yet.")
+
+        st.divider()
+
+        # ── Download buttons ──
+        st.markdown("#### 💾 Export Report")
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            report_json = json.dumps(report, indent=2, default=str)
+            st.download_button(
+                label="⬇️ Download JSON Report",
+                data=report_json,
+                file_name=f"synora_report_{report.get('report_id', 'export')}.json",
+                mime="application/json",
+                key="ap_dl_json",
+                use_container_width=True,
+            )
+        with dl2:
+            # Generate markdown report
+            md_lines = [
+                f"# Synora Infrastructure Planning Report",
+                f"",
+                f"**Report ID:** `{report.get('report_id', 'N/A')}`  ",
+                f"**Generated:** {report.get('generated_at', 'N/A')}  ",
+                f"**Query:** {report.get('query', 'N/A')}  ",
+                f"**Forecast Window:** {report.get('forecast_window', {}).get('start', 'N/A')} – {report.get('forecast_window', {}).get('end', 'N/A')}",
+                f"",
+                f"## Summary Statistics",
+                f"| Metric | Value |",
+                f"|--------|-------|",
+            ]
+            for k, v in stats.items():
+                md_lines.append(f"| {k.replace('_', ' ').title()} | {v} |")
+            md_lines += [
+                f"",
+                f"## Anomalies Detected ({len(anomalies)} zones)",
+            ]
+            for a in anomalies:
+                md_lines.append(f"- **Zone {a['zone_id']}** [{a.get('severity','').upper()}]: {a['reason']}")
+            md_lines += [
+                f"",
+                f"## Recommendation",
+                f"",
+                recommendation,
+                f"",
+                f"## RAG Sources Used",
+            ]
+            for src in rag_sources:
+                md_lines.append(f"- `{src}`")
+
+            md_report = "\n".join(md_lines)
+            st.download_button(
+                label="⬇️ Download Markdown Report",
+                data=md_report,
+                file_name=f"synora_report_{report.get('report_id', 'export')}.md",
+                mime="text/markdown",
+                key="ap_dl_md",
+                use_container_width=True,
+            )
+
+    elif not st.session_state.ap_running:
+        # ── Empty state ──
+        st.markdown("""
+        <div style="text-align:center; padding:4rem 2rem; opacity:0.45;">
+            <div style="font-size:3.5rem; margin-bottom:1rem;">🤖</div>
+            <div style="font-size:1.2rem; font-weight:700; margin-bottom:0.5rem;">Agentic Planner Ready</div>
+            <div style="font-size:0.9rem;">
+                Enter a planning query above and click <b>▶ Run Agent</b> to start.<br>
+                The agent will analyse zone demand, detect anomalies, retrieve knowledge,<br>
+                and generate an AI-powered infrastructure recommendation.
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ROUTER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1102,4 +1640,5 @@ Predictions are made at **hourly granularity** across **275 traffic analysis zon
     "Feature Importance": page_feature_importance,
     "Zone Analysis": page_zone_analysis,
     "About": page_about,
+    "🤖 Agentic Planner": page_agentic_planner,
 }[page]()
