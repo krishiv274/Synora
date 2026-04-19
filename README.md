@@ -1,302 +1,195 @@
-# Synora v2
-### Agentic EV Charging Demand Prediction & Infrastructure Planning
-> Shenzhen, China · UrbanEV Dataset · 275 Traffic Analysis Zones
+# Synora: Intelligent EV Charging Demand Prediction & Agentic Infrastructure Planning
 
-[![Python 3.9+](https://img.shields.io/badge/Python-3.9%2B-blue?logo=python)](https://python.org)
-[![Streamlit](https://img.shields.io/badge/Streamlit-1.31%2B-FF4B4B?logo=streamlit)](https://streamlit.io)
-[![LangGraph](https://img.shields.io/badge/LangGraph-0.2%2B-6C63FF)](https://langchain-ai.github.io/langgraph/)
-[![ChromaDB](https://img.shields.io/badge/ChromaDB-0.5%2B-00C9A7)](https://www.trychroma.com)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
+## From Usage Analytics to Autonomous Grid & Station Planning
+
+### Project Overview
+This project focuses on building an **AI-driven analytics system** for electric vehicle (EV) charging demand prediction using the **UrbanEV dataset** from Shenzhen, China.
 
 ---
 
-## What is Synora?
+### System Architecture
 
-**Synora** is a two-layer AI system for EV charging infrastructure planning:
-
-| Layer | What it does |
-|---|---|
-| **ML Prediction** | 3 ensemble models (RF, XGBoost, LGBM) forecast occupancy (%) and volume (kWh) per zone per hour — realistic R² ~ 0.98 for occupancy, ~ 0.94 for volume |
-| **Agentic Planner** | LangGraph multi-node agent combines ML predictions, anomaly detection, RAG over ChromaDB, and Claude claude-sonnet-4-20250514 to generate grounded infrastructure recommendations |
-
----
-
-## Architecture
-
-```
-  User Query
-      │
-      ▼
-  ┌─────────────────── LangGraph Agent ──────────────────────┐
-  │                                                          │
-  │  [1] demand_forecaster ──▶ Load .pkl → predict per zone │
-  │       │                                                  │
-  │  [2] anomaly_detector  ──▶ Flag occ>85% / surge>40%     │
-  │       │                                                  │
-  │  [3] rag_retriever     ──▶ Query ChromaDB               │
-  │       │                    (275 zone profiles + reports) │
-  │  [4] planning_agent    ──▶ Claude claude-sonnet-4-20250514 → recommendation │
-  │       │                                                  │
-  │  [5] report_generator  ──▶ Structured JSON + Markdown   │
-  │       │                                                  │
-  │  [6] human_review_gate ──▶ Auto-approve or flag for      │
-  │                             human sign-off               │
-  └──────────────────────────────────────────────────────────┘
-      │
-      ▼
-  Synora Dashboard (Streamlit)
-  • Live agent trace   • Demand heatmaps
-  • Anomaly alerts     • RAG source viewer
-  • Recommendation     • JSON/MD download
+```mermaid
+flowchart TD
+    A[Raw Data: UrbanEV CSVs] --> B[Data Inspection & EDA]
+    B --> C[Reshape & Merge Wide to Long]
+    C --> D[Feature Engineering 32 Features]
+    D --> E[Hyperparameter Tuning]
+    E --> F[Model Training: RF, XGB, LGBM]
+    F --> G[Evaluation MAE, RMSE, R²]
+    G --> H[Synora Dashboard Streamlit]
 ```
 
-> Full architecture diagrams with ASCII art: see [`architecture.md`](architecture.md)
-
 ---
 
-## Technology Stack
-
+### Technology Stack
 | Component | Technology |
-|---|---|
-| **ML Models** | Random Forest, XGBoost, LightGBM (scikit-learn) |
-| **Agent Framework** | LangGraph ≥ 0.2, LangChain ≥ 0.3 |
-| **Vector Database** | ChromaDB ≥ 0.5 (persisted at `data/vectorstore/`) |
-| **Embeddings** | `sentence-transformers/all-MiniLM-L6-v2` (local, no API key) |
-| **LLM** | Anthropic Claude `claude-sonnet-4-20250514` (GPT-4o fallback) |
-| **Dashboard** | Streamlit ≥ 1.31 |
-| **Visualisation** | Plotly, Matplotlib, Seaborn |
-| **Language** | Python 3.9+ |
+| :--- | :--- |
+| **ML Models** | Random Forest, XGBoost, LightGBM, Scikit-Learn |
+| **UI Framework** | Streamlit |
+| **Visualization** | Plotly, Matplotlib, Seaborn |
 
 ---
 
-## Dataset — UrbanEV (Shenzhen, China)
+### Dataset
+The **UrbanEV** dataset (Li et al., 2025, *Scientific Data*) was collected from public EV charging stations in Shenzhen, China — a leading city in vehicle electrification. It covers a six-month period (September 1, 2022 – February 28, 2023).
 
 | Property | Value |
-|---|---|
-| Time Range | Sep 2022 – Feb 2023 (6 months, hourly) |
-| Spatial Units | 275 Traffic Analysis Zones (TAZs) |
-| Charging Stations | 1,362 |
-| Charging Piles | 17,532 |
-| Prediction Targets | Occupancy (%) · Volume (kWh) |
+| :--- | :--- |
+| **Time Range** | Sep 2022 – Feb 2023 (6 months) |
+| **Temporal Resolution** | Hourly |
+| **Spatial Units** | 275 Traffic Analysis Zones (TAZs) |
+| **Charging Stations** | 1,362 stations, 17,532 piles |
+| **Raw Variables** | Occupancy, Volume, Duration, Electricity Price, Service Price |
+| **Spatial Features** | Zone area, perimeter, coordinates, station counts |
 
-**Source files used:**
+**Data files used:**
 
 | File | Description |
-|---|---|
-| `occupancy.csv` | Hourly station utilisation rate per zone (%) |
+| :--- | :--- |
+| `occupancy.csv` | Station utilization rate per zone per hour (%) |
 | `volume.csv` | Total energy dispensed per zone per hour (kWh) |
-| `duration.csv` | Aggregated charging durations |
-| `e_price.csv` | Electricity price (CNY/kWh) |
-| `s_price.csv` | Service fee (CNY/kWh) |
-| `zone-information.csv` | Zone coordinates, area, perimeter, pile counts |
+| `duration.csv` | Aggregated charging duration per zone per hour |
+| `e_price.csv` | Electricity price per kWh (CNY) |
+| `s_price.csv` | Service fee per kWh (CNY) |
+| `zone-information.csv` | Zone centroid coordinates, area, perimeter, pile counts |
 | `station_information.csv` | Station-level coordinates and pile counts |
 
 ---
 
-## Model Results
+### Input–Output Specification
 
-### Occupancy Prediction
+| | Description |
+| :--- | :--- |
+| **Input** | Hourly CSV data — occupancy, volume, duration, electricity & service prices, zone spatial features (coordinates, area, perimeter, station/pile counts) |
+| **Engineered Features** | 32 features — temporal (hour, day, month, weekend), cyclical (sin/cos encoding), lag features (1h–168h), rolling statistics (mean/std over 6h–24h windows), spatial (charge density), price (total price) |
+| **Output** | Predicted occupancy (%) and volume (kWh) per zone per hour |
+| **Evaluation Metrics** | MAE, RMSE, R², MAPE |
+
+---
+
+### Model Results
+
+#### Occupancy Prediction
 
 | Model | MAE | RMSE | R² | MAPE (%) |
-|---|---|---|---|---|
-| **Random Forest** | 1.2502 | 2.5798 | **0.9837** | 1.22 |
-| LightGBM | 1.2467 | 2.5725 | 0.9834 | 1.34 |
-| XGBoost | 1.2368 | 2.5522 | 0.9827 | 1.62 |
+| :--- | :--- | :--- | :--- | :--- |
+| **Random Forest** | 0.0075 | 0.1910 | 0.9999 | 0.02 |
+| **LightGBM** | 0.0553 | 0.1417 | 0.9999 | 0.37 |
+| **XGBoost** | 0.1574 | 0.8994 | 0.9981 | 0.62 |
 
-### Volume Prediction
+#### Volume Prediction
 
 | Model | MAE | RMSE | R² | MAPE (%) |
-|---|---|---|---|---|
-| **Random Forest** | 54.27 | 202.81 | **0.9437** | 43.89 |
-| LightGBM | 53.21 | 198.85 | 0.9418 | 48.78 |
-| XGBoost | 53.76 | 200.93 | 0.9428 | 45.87 |
+| :--- | :--- | :--- | :--- | :--- |
+| **LightGBM** | 43.84 | 170.66 | 0.9599 | 48.78 |
+| **XGBoost** | 44.26 | 169.64 | 0.9604 | 45.87 |
+| **Random Forest** | 46.31 | 181.38 | 0.9547 | 43.89 |
 
-> All three models achieve **a realistic R² > 0.94** on both targets, entirely free of target data leakage.
-
----
-
-## Agentic Planner — Node Details
-
-| Node | Trigger condition | Output |
-|---|---|---|
-| `demand_forecaster` | Always runs | Predictions dict (occupancy % + volume kWh per zone) |
-| `anomaly_detector` | Always runs | Flagged zones with severity (critical / high / medium) |
-| `rag_retriever` | Always runs | Top-k ChromaDB docs (zone profiles + planning reports) |
-| `planning_agent` | Always runs | LLM recommendation markdown (rule-based fallback if no API key) |
-| `report_generator` | Always runs | Structured JSON report with unique report ID |
-| `human_review_gate` | surge > 40% OR piles > 10 OR criticals > 5 | `needs_human_review` flag → Streamlit approval widget |
-
-### Anomaly Detection Thresholds
-
-| Condition | Threshold | Severity |
-|---|---|---|
-| Predicted occupancy | > 95% | critical |
-| Predicted occupancy | > 85% | high |
-| Demand surge vs baseline | > 60% | critical |
-| Demand surge vs baseline | > 40% | high |
-| Volume vs zone 90th percentile | exceeded | medium |
-
-### ChromaDB Knowledge Base
-
-```
-data/vectorstore/  ←  Persistent ChromaDB store
-└── Collection: synora_knowledge
-    ├── zone_profile_{id}        275 docs  — spatial + demand features per zone
-    ├── zone_demand_stats_{id}   275 docs  — mean, std, p90 occ + vol per zone
-    ├── synthetic_report_{0–4}     5 docs  — infrastructure planning templates
-    ├── model_metric_{model}_{t}   6 docs  — MAE, RMSE, R², MAPE per model
-    └── feature_importance_{…}     6 docs  — top features per model/target
-```
+> All three models achieve **R² > 0.95** on both targets, with Random Forest achieving near-perfect occupancy prediction (R² = 0.9999).
 
 ---
 
-## Dashboard Pages
-
-| Page | Description |
-|---|---|
-| **Overview** | KPI cards, R²/MAE bar charts, metrics table, hourly demand patterns, all-models overlay |
-| **Model Comparison** | Model metric cards, grouped bars, radar chart |
-| **Predictions Explorer** | Time series, scatter plot, error histogram, residual plot, data table |
-| **Feature Importance** | Top-N bars, cross-model normalised comparison, importance table |
-| **Zone Analysis** | Interactive Shenzhen map, MAE distribution, demand vs error scatter, zone rankings |
-| **About** | Project overview, tech stack, dataset citation |
-| **🤖 Agentic Planner** | Query input, live node trace, demand heatmaps, anomaly alerts, RAG source viewer, recommendation, human approval widget, JSON/MD export |
-
----
-
-## Feature Engineering (30 Features)
-
-| Category | Features |
-|---|---|
-| Spatial | longitude, latitude, area, perimeter, num_stations, total_piles, mean_station_lat, mean_station_lon |
-| Temporal | hour, day_of_week, month, day_of_month, is_weekend |
-| Cyclical (sin/cos) | hour_sin, hour_cos, dow_sin, dow_cos |
-| Lag — Occupancy | occ_lag_1h, occ_lag_3h, occ_lag_6h, occ_lag_12h, occ_lag_24h, occ_lag_168h |
-| Lag — Volume | vol_lag_24h |
-| Rolling Mean | occ_rmean_6h, occ_rmean_12h, occ_rmean_24h |
-| Rolling Std | occ_rstd_24h |
-| Differencing | occ_diff_1h |
-| Price | total_price |
-| Spatial derived | charge_density removed (leakage prevention) |
-
-**Train / Test Split:** Sep 2022–Jan 2023 train · Feb 2023 test (time-based, no leakage)
-
----
-
-## Project Structure
-
-```
-Synora/
-├── streamlit_app.py              ← Dashboard (1,608 lines, 7 pages)
-├── requirements.txt              ← All Python dependencies
-├── architecture.md               ← Full architecture diagrams
-├── README.md                     ← This file
-├── report.tex                    ← LaTeX technical report
-│
-├── agent/                        ← Agentic AI layer
-│   ├── __init__.py
-│   ├── state.py                  ← SynoraState TypedDict (12 fields)
-│   ├── rag_engine.py             ← ChromaDB ingestion + semantic query
-│   ├── rag_pipeline.py           ← LangChain RAG chain
-│   ├── nodes.py                  ← 6 LangGraph node functions
-│   └── graph.py                  ← StateGraph wiring + streaming
-│
-├── data/
-│   ├── raw/
-│   │   ├── charge_1hour/         ← 6 raw hourly CSVs
-│   │   ├── zone-information.csv
-│   │   └── station_information.csv
-│   ├── processed/
-│   │   ├── merged_hourly_data.csv
-│   │   └── final_featured_dataset.csv  ← 30 features, ~1.5M rows
-│   └── vectorstore/              ← ChromaDB persistent store
-│
-├── models/
-│   ├── randomforest_occupancy.pkl
-│   ├── randomforest_volume.pkl
-│   ├── xgboost_occupancy.pkl
-│   ├── xgboost_volume.pkl
-│   ├── lightgbm_occupancy.pkl
-│   └── lightgbm_volume.pkl
-│
-├── notebooks/
-│   ├── 01 data_inspection.ipynb
-│   ├── 02 reshape_dataset.ipynb
-│   ├── 03 feature_engineering.ipynb
-│   ├── 04 hyperparameter_tuning.ipynb
-│   ├── 05 model_training.ipynb
-│   └── 06 visualization.ipynb
-│
-└── results/
-    ├── metrics/model_metrics.csv
-    ├── predictions/test_predictions.csv
-    ├── feature_importance/
-    └── charts/                    ← 19 evaluation charts
-```
-
----
-
-## Setup & Installation
-
-```bash
-# 1. Clone the repository
-git clone https://github.com/krishiv274/Synora.git
-cd Synora
-
-# 2. (Optional) Create a virtual environment
-python3 -m venv .venv && source .venv/bin/activate
-
-# 3. Install all dependencies
-python3 -m pip install -r requirements.txt
-
-# 4. Set your LLM API key (optional — fallback works without it)
-export ANTHROPIC_API_KEY="sk-ant-..."
-# or for OpenAI:
-# export OPENAI_API_KEY="sk-..."
-# export MODEL_PROVIDER="openai"
-
-# 5. Run the dashboard
-python3 -m streamlit run streamlit_app.py
-```
-
-Then open **http://localhost:8501** and navigate to **🤖 Agentic Planner**.
-
-### Environment Variables
-
-| Variable | Required | Default | Description |
-|---|---|---|---|
-| `ANTHROPIC_API_KEY` | Optional | — | Claude claude-sonnet-4-20250514 API key |
-| `OPENAI_API_KEY` | Optional | — | GPT-4o fallback key |
-| `MODEL_PROVIDER` | Optional | `anthropic` | `"anthropic"` or `"openai"` |
-
-> **Without any API key:** the agent uses a deterministic rule-based planner. All other nodes (predict, detect, retrieve, report) work fully without any API key.
-
----
-
-## Notebook Pipeline
+### Notebook Pipeline
 
 | # | Notebook | Description |
-|---|---|---|
-| 1 | `01 data_inspection.ipynb` | EDA — 7 visualisations (daily trends, hourly profiles, distributions, correlation heatmap, zone analysis) |
-| 2 | `02 reshape_dataset.ipynb` | Melt wide CSVs → long, merge zone + station metadata |
-| 3 | `03 feature_engineering.ipynb` | Engineer 30 features → `final_featured_dataset.csv` (No Target Leakage) |
-| 4 | `04 hyperparameter_tuning.ipynb` | GridSearchCV + TimeSeriesSplit (no look-ahead bias) |
-| 5 | `05 model_training.ipynb` | Train 6 models, evaluate on Feb 2023 test set |
-| 6 | `06 visualization.ipynb` | 19 charts: scatter, residuals, feature importance, zone RMSE |
+| :--- | :--- | :--- |
+| 1 | `01 data_inspection.ipynb` | Exploratory data analysis — loads all 6 raw CSVs, summary statistics, 7 visualizations (daily trends, hourly profiles, day-of-week patterns, distributions, correlation heatmap, zone-level analysis) |
+| 2 | `02 reshape_dataset.ipynb` | Data reshaping & merging — melts all 5 hourly CSVs from wide to long format, merges with zone and station metadata into a single master DataFrame |
+| 3 | `03 feature_engineering.ipynb` | Feature engineering — 32 features including temporal, cyclical (sin/cos), lag (1h–168h), rolling statistics, spatial (charge density), and price features |
+| 4 | `04 hyperparameter_tuning.ipynb` | Hyperparameter tuning — GridSearchCV with TimeSeriesSplit for Random Forest, XGBoost, and LightGBM |
+| 5 | `05 model_training.ipynb` | Model training & evaluation — dual-target (occupancy + volume), time-based split (Sep–Jan train, Feb test), 4 evaluation metrics |
+| 6 | `06 visualization.ipynb` | Comprehensive evaluation — 19 charts including model comparison, actual vs predicted, residual analysis, feature importance, zone-level RMSE, price sensitivity |
 
 ---
 
-## References
+### Dashboard
 
-1. Li, H., et al. (2025). *UrbanEV: An open benchmark dataset for urban electric vehicle charging demand prediction.* Scientific Data.
-2. Chen, T., & Guestrin, C. (2016). *XGBoost: A Scalable Tree Boosting System.* KDD.
-3. Ke, G., et al. (2017). *LightGBM: A Highly Efficient Gradient Boosting Decision Tree.* NeurIPS.
-4. Breiman, L. (2001). *Random Forests.* Machine Learning.
-5. LangChain AI (2023). *LangGraph.* https://langchain-ai.github.io/langgraph/
-6. Chroma (2023). *ChromaDB.* https://www.trychroma.com
-7. Reimers & Gurevych (2019). *Sentence-BERT.* EMNLP.
-8. Anthropic (2024). *Claude claude-sonnet-4-20250514.* https://www.anthropic.com
+The **Synora** dashboard (`streamlit_app.py`) provides an interactive interface for exploring model predictions and performance.
+
+**Pages:**
+| Page | Description |
+| :--- | :--- |
+| **Overview** | KPI cards, R²/MAE bar charts, metrics table, hourly demand patterns, all-models overlay |
+| **Model Comparison** | Model cards with metrics, grouped bar charts, metrics radar |
+| **Predictions Explorer** | Time series, scatter plots, error distributions, residual analysis, data table |
+| **Feature Importance** | Top-N feature bars, cross-model comparison (normalized %), full importance table |
+| **Zone Analysis** | Interactive map (Shenzhen), MAE distribution, demand vs error scatter, zone rankings |
+| **About** | Project overview, models used, tech stack, data pipeline description |
 
 ---
 
-> **Location:** Shenzhen, China · **Dataset:** UrbanEV · **Period:** Sep 2022 – Feb 2023
+### Project Structure
+
+```
+EV_Demand_Project/
+├── streamlit_app.py                    ← Streamlit dashboard (Synora)
+├── requirements.txt                    ← Python dependencies
+├── README.md                           ← This file
+├── .streamlit/
+│   └── config.toml                     ← Streamlit theme & server config
+├── data/
+│   ├── raw/
+│   │   ├── charge_1hour/               ← Hourly charging data (6 CSVs)
+│   │   ├── adj.csv                     ← Zone adjacency matrix
+│   │   ├── distance.csv                ← Zone distance matrix
+│   │   ├── station_information.csv     ← Station metadata
+│   │   └── zone-information.csv        ← Zone spatial features
+│   └── processed/
+│       ├── merged_hourly_data.csv      ← All CSVs merged (from NB 02)
+│       └── final_featured_dataset.csv  ← 32-feature dataset (from NB 03)
+├── models/
+│   ├── randomforest_occupancy.pkl      ← Trained Random Forest (occupancy)
+│   ├── randomforest_volume.pkl         ← Trained Random Forest (volume)
+│   ├── xgboost_occupancy.pkl           ← Trained XGBoost (occupancy)
+│   ├── xgboost_volume.pkl              ← Trained XGBoost (volume)
+│   ├── lightgbm_occupancy.pkl          ← Trained LightGBM (occupancy)
+│   └── lightgbm_volume.pkl             ← Trained LightGBM (volume)
+├── notebooks/
+│   ├── 01 data_inspection.ipynb        ← EDA & visualizations
+│   ├── 02 reshape_dataset.ipynb        ← Data reshaping & merging
+│   ├── 03 feature_engineering.ipynb    ← Feature engineering pipeline
+│   ├── 04 hyperparameter_tuning.ipynb  ← GridSearchCV tuning
+│   ├── 05 model_training.ipynb         ← Model training & evaluation
+│   └── 06 visualization.ipynb          ← Comprehensive chart suite
+├── results/
+│   ├── grid_search_results.csv         ← Tuning results
+│   ├── best_hyperparameters.json       ← Optimal parameters
+│   ├── metrics/
+│   │   └── model_metrics.csv           ← MAE, RMSE, R², MAPE for all models
+│   ├── predictions/
+│   │   └── test_predictions.csv        ← Test set predictions
+│   ├── feature_importance/             ← Per-model importance CSVs
+│   └── charts/                         ← 19 exported evaluation charts
+└── project_docs/
+    ├── Project 15_AI_ML.pdf            ← Project brief
+    ├── plan.md                         ← Execution plan
+    └── project_sample.md               ← Reference sample
+```
+
+---
+
+### Setup & Installation
+
+```bash
+# Clone the repository
+git clone https://github.com/<username>/EV_Demand_Project.git
+cd EV_Demand_Project
+
+# Create virtual environment
+python3 -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the dashboard
+streamlit run streamlit_app.py
+```
+
+---
+
+### Acknowledgements
+
+- **Dataset:** *UrbanEV: An open benchmark dataset for urban electric vehicle charging demand prediction.* Scientific Data.
+- **Location:** Shenzhen, China — 275 traffic analysis zones, Sep 2022 – Feb 2023.
