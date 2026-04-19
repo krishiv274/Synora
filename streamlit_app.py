@@ -17,6 +17,8 @@ from synora_agent.phase0_contracts import apply_phase0_defaults, run_phase0_pref
 from synora_agent.phase1_state import apply_phase1_defaults, run_phase1_validation
 from synora_agent.phase2_foundation import apply_phase2_defaults, run_phase2_validation
 from synora_agent.phase3_reasoning import apply_phase3_defaults, run_phase3_pipeline
+from synora_agent.phase4_ranking import apply_phase4_defaults, run_phase4_pipeline
+from synora_agent.phase5_validation import apply_phase5_defaults, run_phase5_validation
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -61,23 +63,29 @@ MODEL_FILE_KEYS = {"RandomForest": "randomforest", "XGBoost": "xgboost", "LightG
 
 
 def init_phase0_state() -> None:
-    """Initialize and validate Phase 0-3 contracts in session state."""
+    """Initialize and validate Phase 0-5 contracts in session state."""
     current = st.session_state.get("agent_state", {})
     state = apply_phase0_defaults(current)
     state = apply_phase1_defaults(state)
     state = apply_phase2_defaults(state)
     state = apply_phase3_defaults(state)
+    state = apply_phase4_defaults(state)
+    state = apply_phase5_defaults(state)
 
     phase0_result = run_phase0_preflight(state)
     phase1_result = run_phase1_validation(state)
     phase2_result = run_phase2_validation(state, Path("."))
     phase3_state, phase3_result = run_phase3_pipeline(state, Path("."))
+    phase4_state, phase4_result = run_phase4_pipeline(phase3_state)
+    phase5_state, phase5_result = run_phase5_validation(phase4_state, Path("."))
 
-    st.session_state["agent_state"] = phase3_state
+    st.session_state["agent_state"] = phase5_state
     st.session_state["phase0_preflight"] = phase0_result
     st.session_state["phase1_validation"] = phase1_result
     st.session_state["phase2_validation"] = phase2_result
     st.session_state["phase3_validation"] = phase3_result
+    st.session_state["phase4_validation"] = phase4_result
+    st.session_state["phase5_validation"] = phase5_result
 
 
 init_phase0_state()
@@ -512,6 +520,51 @@ with st.sidebar:
                 st.caption(f"- {err}")
             for warn in phase3_result.warnings:
                 st.caption(f"- Warning: {warn}")
+
+    phase4_result = st.session_state.get("phase4_validation")
+    if phase4_result is not None:
+        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
+        if phase4_result.passed:
+            st.success(
+                f"Phase 4 validation: PASS ({phase4_result.ranked_count} ranked, "
+                f"{phase4_result.filtered_out_count} filtered)"
+            )
+            if not phase4_result.ranking_stable:
+                st.caption("- Warning: ranking stability check failed.")
+            if not phase4_result.bounded_runtime_ok:
+                st.caption("- Warning: runtime budget exceeded.")
+            for warn in phase4_result.warnings:
+                st.caption(f"- Warning: {warn}")
+        else:
+            st.error("Phase 4 validation: FAIL")
+            for err in phase4_result.errors:
+                st.caption(f"- {err}")
+            for warn in phase4_result.warnings:
+                st.caption(f"- Warning: {warn}")
+
+    phase5_result = st.session_state.get("phase5_validation")
+    if phase5_result is not None:
+        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
+        passed_gate_count = sum(1 for ok in phase5_result.gates.values() if ok)
+        total_gate_count = len(phase5_result.gates)
+
+        if phase5_result.passed and phase5_result.quality_gate_passed:
+            st.success(
+                f"Phase 5 validation: PASS ({passed_gate_count}/{total_gate_count} gates, quality gate passed)"
+            )
+        else:
+            st.error(
+                f"Phase 5 validation: FAIL ({passed_gate_count}/{total_gate_count} gates, quality gate failed)"
+            )
+
+        failed_scenarios = [name for name, ok in phase5_result.scenario_results.items() if not ok]
+        if failed_scenarios:
+            st.caption(f"- Failed scenarios: {', '.join(failed_scenarios)}")
+
+        for err in phase5_result.errors:
+            st.caption(f"- {err}")
+        for warn in phase5_result.warnings:
+            st.caption(f"- Warning: {warn}")
 
     # ── Spacer + footer ──
     st.markdown("<div style='flex:1;min-height:2rem;'></div>", unsafe_allow_html=True)

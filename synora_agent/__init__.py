@@ -34,6 +34,16 @@ from .phase3_reasoning import (
     apply_phase3_defaults,
     run_phase3_pipeline,
 )
+from .phase4_ranking import (
+    PHASE4_VERSION,
+    apply_phase4_defaults,
+    run_phase4_pipeline,
+)
+from .phase5_validation import (
+    PHASE5_VERSION,
+    apply_phase5_defaults,
+    run_phase5_validation,
+)
 
 __all__ = [
     "PHASE0_DEFAULTS",
@@ -62,4 +72,10 @@ __all__ = [
     "PHASE3_VERSION",
     "apply_phase3_defaults",
     "run_phase3_pipeline",
+    "PHASE4_VERSION",
+    "apply_phase4_defaults",
+    "run_phase4_pipeline",
+    "PHASE5_VERSION",
+    "apply_phase5_defaults",
+    "run_phase5_validation",
 ]
