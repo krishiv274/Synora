@@ -20,6 +20,9 @@ import json
 import logging
 import os
 import re
+import warnings
+import io
+import contextlib
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Optional
@@ -30,6 +33,21 @@ import pandas as pd
 from agent.state import SynoraState
 
 logger = logging.getLogger(__name__)
+
+# Silence non-fatal model compatibility warnings that flood agent logs.
+try:
+    from sklearn.exceptions import InconsistentVersionWarning
+    warnings.filterwarnings("ignore", category=InconsistentVersionWarning)
+except Exception:
+    pass
+warnings.filterwarnings(
+    "ignore",
+    message=r".*If you are loading a serialized model.*",
+    category=UserWarning,
+)
+
+# Reduce xgboost native logging noise when loading legacy pickled models.
+os.environ.setdefault("XGBOOST_VERBOSITY", "0")
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 _PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -43,11 +61,11 @@ MAX_PILES_NO_REVIEW = 10          # adding > 10 piles → trigger human review
 
 # ── Feature columns (must match training order) ───────────────────────────────
 FEATURE_COLS: list[str] = [
-    "longitude", "latitude", "area", "perimeter",
+    "longitude", "latitude", "charge_count", "area", "perimeter",
     "num_stations", "total_piles", "mean_station_lat", "mean_station_lon",
     "hour", "day_of_week", "month", "day_of_month", "is_weekend",
     "hour_sin", "hour_cos", "dow_sin", "dow_cos",
-    "total_price",
+    "charge_density", "total_price",
     "occ_lag_1h", "occ_lag_3h", "occ_lag_6h", "occ_lag_12h",
     "occ_lag_24h", "occ_lag_168h", "vol_lag_24h",
     "occ_rmean_6h", "occ_rmean_12h", "occ_rmean_24h",
@@ -153,7 +171,8 @@ def _load_models() -> dict[str, Any]:
                 _models_cache[display_name][target] = None
                 continue
             try:
-                _models_cache[display_name][target] = joblib.load(pkl_path)
+                with contextlib.redirect_stderr(io.StringIO()):
+                    _models_cache[display_name][target] = joblib.load(pkl_path)
                 logger.info("Loaded model: %s / %s", display_name, target)
             except Exception as exc:
                 logger.warning("Failed to load %s/%s: %s", display_name, target, exc)
@@ -292,6 +311,15 @@ def _statistical_prediction(
     return round(predicted_occ, 2), round(predicted_vol, 2)
 
 
+def _model_features(model: Any) -> list[str]:
+    """Return canonical feature order for a trained model."""
+    if hasattr(model, "feature_names_in_"):
+        return [str(c) for c in model.feature_names_in_]
+    if hasattr(model, "feature_name_"):
+        return [str(c) for c in model.feature_name_]
+    return FEATURE_COLS
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Node 1 — demand_forecaster
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -366,11 +394,42 @@ def demand_forecaster(state: SynoraState) -> dict[str, Any]:
             if not zone_test.empty and all(c in zone_test.columns for c in FEATURE_COLS):
                 sample = zone_test.dropna(subset=FEATURE_COLS).head(1)
                 if not sample.empty:
-                    X = sample[FEATURE_COLS]
                     occ_model = models[best_model_name]["occupancy"]
                     vol_model = models[best_model_name]["volume"]
-                    pred_occ = float(occ_model.predict(X)[0]) if occ_model else baseline_occ
-                    pred_vol = float(vol_model.predict(X)[0]) if vol_model else baseline_vol
+
+                    occ_pred_ok = False
+                    vol_pred_ok = False
+                    pred_occ = baseline_occ
+                    pred_vol = baseline_vol
+
+                    if occ_model is not None:
+                        occ_features = _model_features(occ_model)
+                        if all(c in sample.columns for c in occ_features):
+                            X_occ = sample[occ_features]
+                            if not X_occ.isna().any(axis=1).iloc[0]:
+                                pred_occ = float(occ_model.predict(X_occ)[0])
+                                occ_pred_ok = True
+
+                    if vol_model is not None:
+                        vol_features = _model_features(vol_model)
+                        if all(c in sample.columns for c in vol_features):
+                            X_vol = sample[vol_features]
+                            if not X_vol.isna().any(axis=1).iloc[0]:
+                                pred_vol = float(vol_model.predict(X_vol)[0])
+                                vol_pred_ok = True
+
+                    if not occ_pred_ok and not vol_pred_ok:
+                        pred_occ, pred_vol = _statistical_prediction(
+                            zone_id, target_hour, zone_stats, is_weekend
+                        )
+                    elif not occ_pred_ok:
+                        pred_occ, _ = _statistical_prediction(
+                            zone_id, target_hour, zone_stats, is_weekend
+                        )
+                    elif not vol_pred_ok:
+                        _, pred_vol = _statistical_prediction(
+                            zone_id, target_hour, zone_stats, is_weekend
+                        )
                 else:
                     pred_occ, pred_vol = _statistical_prediction(
                         zone_id, target_hour, zone_stats, is_weekend
@@ -506,20 +565,16 @@ def rag_retriever(state: SynoraState) -> dict[str, Any]:
     ------------
     rag_context, rag_sources, agent_trace, rag_retrieval_ok
     """
-    from agent.rag_engine import ingest_all_data, query_context, get_zone_context
-
     trace = list(state.get("agent_trace", []))
-    trace.append("📚 rag_retriever: Querying ChromaDB vector store …")
+    trace.append("[RAG] rag_retriever: Retrieving planning context …")
 
     query = state.get("query", "planning")
     zone_ids: list[int] = state.get("zone_ids", [])
     anomalies: list[dict[str, Any]] = state.get("anomalies", [])
     predictions: dict[int, dict[str, float]] = state.get("predictions", {})
+    backend = os.getenv("SYNORA_RAG_BACKEND", "lightweight").strip().lower()
 
     try:
-        # Ensure vectorstore is populated
-        ingest_all_data()
-
         # Build a rich retrieval query from context
         anomaly_zone_ids = [a["zone_id"] for a in anomalies]
         anomaly_descriptions = "; ".join(
@@ -532,31 +587,81 @@ def rag_retriever(state: SynoraState) -> dict[str, Any]:
         if anomaly_descriptions:
             enriched_query += f"Anomalies detected: {anomaly_descriptions}."
 
-        # General query retrieval
-        general_docs = query_context(enriched_query, top_k=5)
-
-        # Per-anomaly-zone context
-        zone_docs: list[dict[str, Any]] = []
-        if anomaly_zone_ids:
-            zone_docs = get_zone_context(anomaly_zone_ids[:5], top_k_per_zone=2)
-
-        # High-demand general docs if no anomalies
-        if not anomaly_zone_ids and zone_ids:
-            zone_docs = get_zone_context(zone_ids[:3], top_k_per_zone=2)
-
-        # Merge and deduplicate
-        seen_ids: set[str] = set()
         all_docs: list[dict[str, Any]] = []
-        for doc in general_docs + zone_docs:
-            if doc["id"] not in seen_ids:
-                seen_ids.add(doc["id"])
-                all_docs.append(doc)
+
+        if backend == "chroma":
+            # Optional heavy backend; keep disabled by default because native
+            # dependencies can be unstable on some local environments.
+            from agent.rag_engine import ingest_all_data, query_context, get_zone_context
+
+            ingest_all_data()
+            general_docs = query_context(enriched_query, top_k=5)
+
+            zone_docs: list[dict[str, Any]] = []
+            if anomaly_zone_ids:
+                zone_docs = get_zone_context(anomaly_zone_ids[:5], top_k_per_zone=2)
+            elif zone_ids:
+                zone_docs = get_zone_context(zone_ids[:3], top_k_per_zone=2)
+
+            seen_ids: set[str] = set()
+            for doc in general_docs + zone_docs:
+                if doc["id"] not in seen_ids:
+                    seen_ids.add(doc["id"])
+                    all_docs.append(doc)
+        else:
+            # Lightweight deterministic retrieval path (pure Python).
+            from debug.synora_agent.phase2_foundation import (
+                build_guideline_corpus,
+                retrieve_guidelines,
+            )
+
+            corpus = build_guideline_corpus()
+            for item in retrieve_guidelines(
+                query=enriched_query,
+                corpus=corpus,
+                top_k=5,
+                min_relevance=0.05,
+            ):
+                all_docs.append(
+                    {
+                        "id": str(item.get("doc_id", "guideline")),
+                        "document": str(item.get("text", "")),
+                    }
+                )
+
+            for a in anomalies[:3]:
+                all_docs.append(
+                    {
+                        "id": f"anomaly_zone_{a['zone_id']}",
+                        "document": (
+                            f"Zone {a['zone_id']} anomaly summary. "
+                            f"Occupancy {a.get('occupancy', 0):.1f}%, "
+                            f"Volume {a.get('volume', 0):.1f} kWh, "
+                            f"Reason: {a.get('reason', '')}"
+                        ),
+                    }
+                )
+
+            if not anomalies and zone_ids:
+                for zid in zone_ids[:3]:
+                    p = predictions.get(zid, {})
+                    all_docs.append(
+                        {
+                            "id": f"zone_{zid}_snapshot",
+                            "document": (
+                                f"Zone {zid} forecast snapshot. "
+                                f"Occupancy {p.get('occupancy', 0):.1f}%, "
+                                f"Volume {p.get('volume', 0):.1f} kWh."
+                            ),
+                        }
+                    )
 
         rag_context = [d["document"] for d in all_docs]
         rag_sources = [d["id"] for d in all_docs]
 
         trace.append(
             f"✅ rag_retriever: Retrieved {len(all_docs)} context documents "
+            f"using backend={backend} "
             f"(sources: {', '.join(rag_sources[:4])}{'…' if len(rag_sources) > 4 else ''})."
         )
 
@@ -567,7 +672,7 @@ def rag_retriever(state: SynoraState) -> dict[str, Any]:
             "rag_retrieval_ok": True,
         }
     except Exception as exc:
-        logger.warning("RAG retrieval failed: %s", exc, exc_info=True)
+        logger.warning("RAG retrieval failed: %s", exc)
         msg = str(exc)[:160]
         trace.append(
             f"⚠️ rag_retriever: Retrieval failed ({msg}). "
@@ -601,7 +706,10 @@ def planning_agent(state: SynoraState) -> dict[str, Any]:
     ------------
     recommendation, agent_trace
     """
-    from agent.rag_pipeline import build_rag_chain, SYSTEM_PROMPT
+    try:
+        from agent.rag_pipeline import SYSTEM_PROMPT
+    except Exception:
+        SYSTEM_PROMPT = "You are Synora, an EV charging infrastructure planning assistant."
 
     trace = list(state.get("agent_trace", []))
     trace.append("🤖 planning_agent: Calling LLM for infrastructure recommendations …")
@@ -691,62 +799,64 @@ Format your response as:
 """
 
     try:
-        chain = build_rag_chain()
-        recommendation = chain.invoke(
-            {"question": query, "context": context_str}
-        )
-        # Override with richer prompt if chain supports it
-        from langchain_core.messages import HumanMessage, SystemMessage
-        llm_instance = chain.steps[0] if hasattr(chain, "steps") else None
+        provider = os.getenv("MODEL_PROVIDER", "groq").strip().lower()
+        if provider not in {"groq", "anthropic", "openai"}:
+            provider = "groq"
 
-        # Direct call for richer prompt
-        provider = os.getenv("MODEL_PROVIDER", "groq").lower()
-        if provider == "groq":
-            api_key = os.getenv("GROQ_API_KEY", "")
-            if api_key:
-                from groq import Groq
-                client = Groq(api_key=api_key)
-                resp = client.chat.completions.create(
-                    model="llama-3.3-70b-versatile",
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": full_prompt},
-                    ],
-                    max_tokens=2500,
-                    temperature=0.3,
-                )
-                recommendation = resp.choices[0].message.content
+        key_by_provider = {
+            "groq": "GROQ_API_KEY",
+            "anthropic": "ANTHROPIC_API_KEY",
+            "openai": "OPENAI_API_KEY",
+        }
+        active_key = key_by_provider[provider]
+        api_key = os.getenv(active_key, "")
+
+        if not api_key:
+            recommendation = _rule_based_recommendation(
+                query, predictions, anomalies, time_window
+            )
+            trace.append(
+                f"ℹ️ planning_agent: No {active_key} configured for provider={provider}; used rule-based recommendation."
+            )
+        elif provider == "groq":
+            from groq import Groq
+            client = Groq(api_key=api_key)
+            resp = client.chat.completions.create(
+                model="llama-3.3-70b-versatile",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": full_prompt},
+                ],
+                max_tokens=2500,
+                temperature=0.3,
+            )
+            recommendation = resp.choices[0].message.content
         elif provider == "anthropic":
-            api_key = os.getenv("ANTHROPIC_API_KEY", "")
-            if api_key:
-                from anthropic import Anthropic
-                client = Anthropic(api_key=api_key)
-                msg = client.messages.create(
-                    model="claude-sonnet-4-20250514",
-                    max_tokens=2500,
-                    messages=[{"role": "user", "content": full_prompt}],
-                    system=SYSTEM_PROMPT,
-                )
-                recommendation = msg.content[0].text
-        elif provider == "openai":
-            api_key = os.getenv("OPENAI_API_KEY", "")
-            if api_key:
-                from openai import OpenAI
-                client = OpenAI(api_key=api_key)
-                resp = client.chat.completions.create(
-                    model="gpt-4o",
-                    messages=[
-                        {"role": "system", "content": SYSTEM_PROMPT},
-                        {"role": "user", "content": full_prompt},
-                    ],
-                    max_tokens=2500,
-                    temperature=0.3,
-                )
-                recommendation = resp.choices[0].message.content
+            from anthropic import Anthropic
+            client = Anthropic(api_key=api_key)
+            msg = client.messages.create(
+                model="claude-sonnet-4-20250514",
+                max_tokens=2500,
+                messages=[{"role": "user", "content": full_prompt}],
+                system=SYSTEM_PROMPT,
+            )
+            recommendation = msg.content[0].text
+        else:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key)
+            resp = client.chat.completions.create(
+                model="gpt-4o",
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user", "content": full_prompt},
+                ],
+                max_tokens=2500,
+                temperature=0.3,
+            )
+            recommendation = resp.choices[0].message.content
 
     except Exception as exc:
-        logger.warning("LLM call failed: %s", exc)
-        # Fallback: generate rule-based recommendation
+        logger.warning("planning_agent fallback triggered: %s", exc)
         recommendation = _rule_based_recommendation(
             query, predictions, anomalies, time_window
         )

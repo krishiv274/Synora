@@ -9,6 +9,8 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import os
+import io
+import contextlib
 import importlib
 import plotly.express as px
 import plotly.graph_objects as go
@@ -29,6 +31,9 @@ from debug.synora_agent.phase5_validation import apply_phase5_defaults, run_phas
 from debug.synora_agent.phase6_operations import apply_phase6_defaults, run_phase6_operations
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
+
+# Reduce xgboost native logging noise when loading legacy pickled models.
+os.environ.setdefault("XGBOOST_VERBOSITY", "0")
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # CONFIG
@@ -274,7 +279,8 @@ def load_models():
             p = PATHS["models_dir"] / f"{fk}_{tgt}.pkl"
             if p.exists() and p.stat().st_size > 500:
                 try:
-                    models[mn][tgt] = joblib.load(p)
+                    with contextlib.redirect_stderr(io.StringIO()):
+                        models[mn][tgt] = joblib.load(p)
                 except Exception:
                     models[mn][tgt] = None
             else:
@@ -1496,44 +1502,46 @@ def page_agentic_planner():
         "LangGraph · ChromaDB RAG · Groq Llama 3.3 — AI-powered EV infrastructure planning",
     )
 
-    # ── Sidebar API key config ──
-    with st.sidebar:
-        st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
-        with st.expander("API Keys", expanded=False):
-            groq_key = st.text_input(
-                "Groq API Key (free)",
-                value=os.getenv("GROQ_API_KEY", ""),
-                type="password",
-                key="ap_groq_key",
-                help="Free key — get one at https://console.groq.com",
-            )
-            anthropic_key = st.text_input(
-                "Anthropic API Key",
-                value=os.getenv("ANTHROPIC_API_KEY", ""),
-                type="password",
-                key="ap_anthropic_key",
-                help="Required for Claude claude-sonnet-4-20250514",
-            )
-            openai_key = st.text_input(
-                "OpenAI API Key",
-                value=os.getenv("OPENAI_API_KEY", ""),
-                type="password",
-                key="ap_openai_key",
-                help="Used when MODEL_PROVIDER=openai",
-            )
-            provider = st.selectbox(
-                "LLM Provider",
-                ["groq", "anthropic", "openai"],
-                index=0,
-                key="ap_provider",
-            )
-            if groq_key:
-                os.environ["GROQ_API_KEY"] = groq_key
-            if anthropic_key:
-                os.environ["ANTHROPIC_API_KEY"] = anthropic_key
-            if openai_key:
-                os.environ["OPENAI_API_KEY"] = openai_key
-            os.environ["MODEL_PROVIDER"] = provider
+    # ── Secrets-only API config ──
+    # API keys/provider are sourced from .streamlit/secrets.toml and mirrored
+    # into process environment because agent modules read os.environ.
+    try:
+        secrets = st.secrets
+    except Exception:
+        secrets = {}
+
+    provider = str(secrets.get("MODEL_PROVIDER") or "groq").strip().lower()
+    if provider not in {"groq", "anthropic", "openai"}:
+        provider = "groq"
+
+    os.environ["MODEL_PROVIDER"] = provider
+
+    rag_backend = str(secrets.get("SYNORA_RAG_BACKEND") or "lightweight").strip().lower()
+    if rag_backend not in {"lightweight", "chroma"}:
+        rag_backend = "lightweight"
+    os.environ["SYNORA_RAG_BACKEND"] = rag_backend
+
+    for key_name in ["GROQ_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY"]:
+        secret_val = secrets.get(key_name)
+        if secret_val:
+            os.environ[key_name] = str(secret_val)
+        else:
+            os.environ.pop(key_name, None)
+
+    provider_key_map = {
+        "groq": "GROQ_API_KEY",
+        "anthropic": "ANTHROPIC_API_KEY",
+        "openai": "OPENAI_API_KEY",
+    }
+    active_key_name = provider_key_map[provider]
+    if not os.getenv(active_key_name):
+        st.warning(
+            f"Missing {active_key_name} for MODEL_PROVIDER={provider}. "
+            "Add it to .streamlit/secrets.toml."
+        )
+    else:
+        st.caption(f"LLM provider configured from secrets: {provider}")
+    st.caption(f"RAG backend: {rag_backend}")
 
     # ── Initialise session state ──
     for k, v in [
@@ -1567,7 +1575,7 @@ def page_agentic_planner():
             "Run Agent",
             type="primary",
             disabled=st.session_state.ap_running,
-            use_container_width=True,
+            width="stretch",
             key="ap_run_btn",
         )
 
@@ -1588,7 +1596,7 @@ def page_agentic_planner():
             if st.button(
                 ex[:42] + "…" if len(ex) > 42 else ex,
                 key=f"ap_ex_{i}",
-                use_container_width=True,
+                width="stretch",
             ):
                 # Store in intermediate key — flushed to ap_query_input
                 # at the TOP of next run, before the widget is created
@@ -1766,7 +1774,7 @@ def page_agentic_planner():
                 ))
                 styled_fig(fig_occ, "Predicted Occupancy by Zone (%)", height=340)
                 fig_occ.update_xaxes(tickangle=-45)
-                st.plotly_chart(fig_occ, key="ap_occ_bar", use_container_width=True)
+                st.plotly_chart(fig_occ, key="ap_occ_bar", width="stretch")
 
             with hm_cols[1]:
                 fig_vol = go.Figure(go.Bar(
@@ -1782,7 +1790,7 @@ def page_agentic_planner():
                 ))
                 styled_fig(fig_vol, "Predicted Volume by Zone (kWh)", height=340)
                 fig_vol.update_xaxes(tickangle=-45)
-                st.plotly_chart(fig_vol, key="ap_vol_bar", use_container_width=True)
+                st.plotly_chart(fig_vol, key="ap_vol_bar", width="stretch")
 
             # Surge scatter
             st.markdown("##### Demand Surge vs Baseline")
@@ -1803,7 +1811,7 @@ def page_agentic_planner():
             )
             styled_fig(fig_surge, "Demand Surge vs Historical Baseline", height=300)
             fig_surge.update_xaxes(tickangle=-45)
-            st.plotly_chart(fig_surge, key="ap_surge", use_container_width=True)
+            st.plotly_chart(fig_surge, key="ap_surge", width="stretch")
 
         st.divider()
 
@@ -1874,7 +1882,7 @@ def page_agentic_planner():
                     "Approve and Finalise Report",
                     type="primary",
                     key="ap_approve_btn",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     st.session_state.ap_approved = True
                     # Rerun agent with approved=True
@@ -1886,7 +1894,7 @@ def page_agentic_planner():
                     "Reject Recommendation",
                     type="secondary",
                     key="ap_reject_btn",
-                    use_container_width=True,
+                    width="stretch",
                 ):
                     st.session_state.ap_result = None
                     st.session_state.ap_trace = []
@@ -1899,10 +1907,7 @@ def page_agentic_planner():
         # ── Final recommendation ──
         st.markdown("#### Infrastructure Recommendation")
         if recommendation:
-            st.markdown(
-                f'<div class="rec-box">{recommendation.replace(chr(10), "<br>") if "<br>" not in recommendation else recommendation}</div>',
-                unsafe_allow_html=True,
-            )
+            st.markdown(recommendation)
         else:
             st.info("No recommendation generated yet.")
 
@@ -1919,7 +1924,7 @@ def page_agentic_planner():
                 file_name=f"synora_report_{report.get('report_id', 'export')}.json",
                 mime="application/json",
                 key="ap_dl_json",
-                use_container_width=True,
+                width="stretch",
             )
         with dl2:
             # Generate markdown report
@@ -1976,7 +1981,7 @@ def page_agentic_planner():
                 file_name=f"synora_report_{report.get('report_id', 'export')}.md",
                 mime="text/markdown",
                 key="ap_dl_md",
-                use_container_width=True,
+                width="stretch",
             )
 
     elif not st.session_state.ap_running:
