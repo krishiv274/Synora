@@ -29,6 +29,11 @@ from .phase2_foundation import (
     retrieve_guidelines,
     run_phase2_validation,
 )
+from .phase3_reasoning import (
+    PHASE3_VERSION,
+    apply_phase3_defaults,
+    run_phase3_pipeline,
+)
 
 __all__ = [
     "PHASE0_DEFAULTS",
@@ -54,4 +59,7 @@ __all__ = [
     "build_guideline_corpus",
     "retrieve_guidelines",
     "run_phase2_validation",
+    "PHASE3_VERSION",
+    "apply_phase3_defaults",
+    "run_phase3_pipeline",
 ]

@@ -16,6 +16,7 @@ import joblib
 from synora_agent.phase0_contracts import apply_phase0_defaults, run_phase0_preflight
 from synora_agent.phase1_state import apply_phase1_defaults, run_phase1_validation
 from synora_agent.phase2_foundation import apply_phase2_defaults, run_phase2_validation
+from synora_agent.phase3_reasoning import apply_phase3_defaults, run_phase3_pipeline
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -60,15 +61,23 @@ MODEL_FILE_KEYS = {"RandomForest": "randomforest", "XGBoost": "xgboost", "LightG
 
 
 def init_phase0_state() -> None:
-    """Initialize and validate Phase 0-2 contracts in session state."""
+    """Initialize and validate Phase 0-3 contracts in session state."""
     current = st.session_state.get("agent_state", {})
     state = apply_phase0_defaults(current)
     state = apply_phase1_defaults(state)
     state = apply_phase2_defaults(state)
-    st.session_state["agent_state"] = state
-    st.session_state["phase0_preflight"] = run_phase0_preflight(st.session_state["agent_state"])
-    st.session_state["phase1_validation"] = run_phase1_validation(st.session_state["agent_state"])
-    st.session_state["phase2_validation"] = run_phase2_validation(st.session_state["agent_state"], Path("."))
+    state = apply_phase3_defaults(state)
+
+    phase0_result = run_phase0_preflight(state)
+    phase1_result = run_phase1_validation(state)
+    phase2_result = run_phase2_validation(state, Path("."))
+    phase3_state, phase3_result = run_phase3_pipeline(state, Path("."))
+
+    st.session_state["agent_state"] = phase3_state
+    st.session_state["phase0_preflight"] = phase0_result
+    st.session_state["phase1_validation"] = phase1_result
+    st.session_state["phase2_validation"] = phase2_result
+    st.session_state["phase3_validation"] = phase3_result
 
 
 init_phase0_state()
@@ -110,13 +119,13 @@ section[data-testid="stSidebar"] {
     background: linear-gradient(165deg, #0a0a1a 0%, #0f0f28 35%, #161035 70%, #1a1040 100%);
     border-right: 1px solid rgba(108,99,255,0.12);
     overflow-x: hidden !important;
-    overflow-y: hidden !important;
+    overflow-y: auto !important;
     max-height: 100vh;
     box-shadow: 4px 0 30px rgba(0,0,0,0.3);
 }
 section[data-testid="stSidebar"] > div:first-child {
     overflow-x: hidden !important;
-    overflow-y: hidden !important;
+    overflow-y: auto !important;
     display: flex; flex-direction: column; min-height: 100vh;
 }
 section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span,
@@ -481,6 +490,27 @@ with st.sidebar:
             for err in phase2_result.errors:
                 st.caption(f"- {err}")
             for warn in phase2_result.warnings:
+                st.caption(f"- Warning: {warn}")
+
+    phase3_result = st.session_state.get("phase3_validation")
+    if phase3_result is not None:
+        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
+        if phase3_result.passed:
+            st.success(
+                f"Phase 3 validation: PASS ({len(phase3_result.node_sequence)} nodes, "
+                f"{phase3_result.recommendation_count} recs)"
+            )
+            if not phase3_result.output_contract_ok:
+                st.caption("- Warning: output contract check failed.")
+            if not phase3_result.recommendation_contract_ok:
+                st.caption("- Warning: recommendation contract check failed.")
+            for warn in phase3_result.warnings:
+                st.caption(f"- Warning: {warn}")
+        else:
+            st.error("Phase 3 validation: FAIL")
+            for err in phase3_result.errors:
+                st.caption(f"- {err}")
+            for warn in phase3_result.warnings:
                 st.caption(f"- Warning: {warn}")
 
     # ── Spacer + footer ──
