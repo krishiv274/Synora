@@ -13,6 +13,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
 import joblib
+from synora_agent.phase0_contracts import apply_phase0_defaults, run_phase0_preflight
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -54,6 +55,16 @@ PRED_COLS = {
 }
 MODEL_KEYS = {"randomforest": "RandomForest", "xgboost": "XGBoost", "lightgbm": "LightGBM"}
 MODEL_FILE_KEYS = {"RandomForest": "randomforest", "XGBoost": "xgboost", "LightGBM": "lightgbm"}
+
+
+def init_phase0_state() -> None:
+    """Initialize and validate Phase 0 contracts in session state."""
+    current = st.session_state.get("agent_state", {})
+    st.session_state["agent_state"] = apply_phase0_defaults(current)
+    st.session_state["phase0_preflight"] = run_phase0_preflight(st.session_state["agent_state"])
+
+
+init_phase0_state()
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # PAGE SETUP
@@ -421,6 +432,20 @@ with st.sidebar:
         </span>
     </div>
     """, unsafe_allow_html=True)
+
+    phase0_result = st.session_state.get("phase0_preflight")
+    if phase0_result is not None:
+        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
+        if phase0_result.passed:
+            st.success("Phase 0 preflight: PASS")
+            for warn in phase0_result.warnings:
+                st.caption(f"- Warning: {warn}")
+        else:
+            st.error("Phase 0 preflight: FAIL")
+            for err in phase0_result.errors:
+                st.caption(f"- {err}")
+            for warn in phase0_result.warnings:
+                st.caption(f"- Warning: {warn}")
 
     # ── Spacer + footer ──
     st.markdown("<div style='flex:1;min-height:2rem;'></div>", unsafe_allow_html=True)
