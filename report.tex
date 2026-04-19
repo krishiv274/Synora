@@ -428,7 +428,7 @@ On approval, the agent re-runs with \texttt{approved=True} to finalise the repor
 % ══════════════════════════════════════════════════════════════
 \section{Dashboard}
 
-The Synora Streamlit dashboard (\texttt{streamlit\_app.py}, 1,608 lines) exposes
+The Synora Streamlit dashboard (\texttt{streamlit\_app.py}) exposes
 seven pages:
 
 \begin{table}[H]
@@ -444,7 +444,9 @@ Feature Importance & Top-N bar charts, cross-model normalised comparison \\
 Zone Analysis & Interactive Shenzhen map, MAE heatmap, zone rankings \\
 About & Project overview, dataset summary, tech stack \\
 \textbf{Agentic Planner} & Live agent step trace, demand heatmap, anomaly alerts,
-                          RAG sources, recommendation, human approval widget,
+                          RAG sources, structured JSON fields (demand summary,
+                          high-load zone IDs, scheduling insights, placement priorities),
+                          recommendation, human approval widget,
                           JSON/Markdown download \\
 \bottomrule
 \end{tabular}
@@ -486,8 +488,9 @@ Agent Orchestration & LangGraph & $\geq$ 0.2 \\
 LLM Chaining & LangChain, langchain-anthropic & $\geq$ 0.3 \\
 Vector Database & ChromaDB & $\geq$ 0.5 \\
 Embeddings & sentence-transformers (all-MiniLM-L6-v2) & $\geq$ 2.7 \\
-LLM & Anthropic Claude claude-sonnet-4-20250514 & API \\
-LLM Fallback & OpenAI GPT-4o & API \\
+LLM (default) & Groq Llama 3.3 70B Versatile & API \\
+LLM (optional) & Anthropic Claude claude-sonnet-4-20250514 & API \\
+LLM (optional) & OpenAI GPT-4o & API \\
 Dashboard & Streamlit & $\geq$ 1.31 \\
 Visualisation & Plotly, Matplotlib, Seaborn & latest \\
 \bottomrule
@@ -508,6 +511,38 @@ Visualisation & Plotly, Matplotlib, Seaborn & latest \\
   \item \textbf{Syed Darain Qamar:} Streamlit dashboard UI (all 7 pages), Agentic
         Planner page design, report preparation
 \end{itemize}
+
+% ══════════════════════════════════════════════════════════════
+\section{Course Rubric and Milestone\,2 Mapping}
+
+This project is submitted as an \textbf{agentic AI} system layered on ensemble ML
+forecasts (UrbanEV). The end-semester milestone requires: (i)~demand analysis for
+high-load zones, (ii)~retrieval of planning guidelines, (iii)~charger placement
+recommendations, (iv)~scheduling-oriented insights, (v)~LangGraph with explicit
+state, and (vi)~structured outputs.
+
+\paragraph{Structured outputs.}
+The \texttt{report\_generator} node emits a JSON-serialisable report including
+\texttt{charging\_demand\_summary} (aggregate statistics and narrative),
+\texttt{high\_load\_locations} / \texttt{high\_load\_zone\_ids} (ranked TAZs by
+predicted occupancy), \texttt{charger\_placement\_priorities} (severity and
+rationale per priority zone), \texttt{scheduling\_insights} (peak windows,
+maintenance windows, heuristic load-shifting note), and
+\texttt{grounding\_and\_retrieval} (document counts, \texttt{rag\_retrieval\_ok},
+and a hallucination-mitigation note when retrieval is empty or failed).
+
+\paragraph{Robustness.}
+If ChromaDB ingest or query raises an exception, \texttt{rag\_retriever} clears
+context, sets \texttt{rag\_retrieval\_ok=false}, and the pipeline continues so
+the UI can warn the operator. If LLM APIs are unavailable, \texttt{planning\_agent}
+falls back to a deterministic markdown plan including a
+\texttt{SCHEDULING \& OPERATIONS} section.
+
+\paragraph{Deliverables.}
+Source code and reproducible local run: GitHub repository;
+written report: this \texttt{report.tex};
+hosted demo and demonstration video: to be linked from the repository README
+(Streamlit Community Cloud or Hugging Face Space).
 
 % ══════════════════════════════════════════════════════════════
 \section{Conclusion}

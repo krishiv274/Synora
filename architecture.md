@@ -357,7 +357,7 @@
 
 ```
 Synora/
-├── streamlit_app.py              ← Dashboard (1,608 lines)
+├── streamlit_app.py              ← Dashboard (UI + Agentic Planner)
 ├── requirements.txt              ← All dependencies
 ├── architecture.md               ← This file
 ├── README.md                     ← Project overview

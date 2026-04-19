@@ -47,6 +47,9 @@ class SynoraState(TypedDict, total=False):
         the Streamlit UI for live step-by-step display.
     error : str | None
         Set if a node raises an unrecoverable error.
+    rag_retrieval_ok : bool
+        Set by ``rag_retriever``: False when ChromaDB ingest/query failed; the
+        pipeline continues with empty RAG context and conservative grounding notes.
     """
 
     query: str
@@ -62,6 +65,7 @@ class SynoraState(TypedDict, total=False):
     approved: bool
     agent_trace: list[str]
     error: Optional[str]
+    rag_retrieval_ok: bool
 
 
 def initial_state(query: str) -> SynoraState:
@@ -93,4 +97,5 @@ def initial_state(query: str) -> SynoraState:
         approved=False,
         agent_trace=[],
         error=None,
+        rag_retrieval_ok=True,
     )

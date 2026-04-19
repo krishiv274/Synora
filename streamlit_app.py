@@ -397,12 +397,13 @@ with st.sidebar:
     target = st.radio(
         "Target",
         ["occupancy", "volume"],
-        format_func=lambda t: "Occupancy" if t == "occupancy" else "Volume",
+        format_func=lambda t: "👥 Occupancy" if t == "occupancy" else "⚡ Volume",
         horizontal=True,
         label_visibility="collapsed",
         key="global_target",
     )
     target_label = "Occupancy" if target == "occupancy" else "Volume"
+    target_badge = "👥 Occupancy" if target == "occupancy" else "⚡ Volume"
 
     st.markdown("</div>", unsafe_allow_html=True)   # close glass card
 
@@ -414,15 +415,22 @@ with st.sidebar:
                     letter-spacing:0.1em; opacity:0.35; margin-bottom:0.35rem; text-align:center;">Navigation</div>
     """, unsafe_allow_html=True)
 
-    NAV_PAGES = ["Overview", "Model Comparison", "Predictions Explorer",
-                 "Feature Importance", "Zone Analysis", "About",
-                 "🤖 Agentic Planner"]
+    NAV_PAGES = [
+        "🤖 Agentic Planner",
+        "📊 Overview",
+        "📈 Model Comparison",
+        "🔍 Predictions Explorer",
+        "🎯 Feature Importance",
+        "🗺️ Zone Analysis",
+        "ℹ️ About",
+    ]
     page = st.radio(
         "Nav",
         NAV_PAGES,
+        index=1,
         format_func=lambda p: p,
         label_visibility="collapsed",
-        key="page_nav",
+        key="sidebar_nav",
     )
 
     st.markdown("</div>", unsafe_allow_html=True)   # close glass card
@@ -434,7 +442,7 @@ with st.sidebar:
         <span style="background:{badge_color}18; color:{badge_color}; border:1px solid {badge_color}40;
                      padding:0.35rem 1.1rem; border-radius:20px; font-size:0.78rem; font-weight:700;
                      backdrop-filter:blur(8px);">
-            {target_label} Mode
+            {target_badge} Mode
         </span>
     </div>
     """, unsafe_allow_html=True)
@@ -1096,6 +1104,7 @@ Predictions are made at **hourly granularity** across **275 traffic analysis zon
 - 3-model comparison
 - Interactive spatial maps
 - Feature importance analysis
+- **Agentic Planner:** LangGraph workflow, ChromaDB RAG, structured demand / high-load / scheduling JSON
 
 </div>
         """, unsafe_allow_html=True)
@@ -1383,6 +1392,37 @@ def page_agentic_planner():
         k4.metric("Zones at Risk", stats.get("zones_at_risk", 0))
         k5.metric("RAG Sources", len(rag_sources))
 
+        gr = report.get("grounding_and_retrieval") or {}
+        if not gr.get("rag_retrieval_ok", True):
+            st.warning(
+                "**RAG retrieval failed or was skipped.** The agent continued with ML predictions "
+                "and rule-based heuristics only. Treat capital figures conservatively and "
+                "verify any uncited claims."
+            )
+        elif len(rag_sources) == 0 and gr.get("rag_retrieval_ok", True):
+            st.info(
+                "No knowledge-base documents matched this query closely. "
+                "The recommendation still uses zone-level ML outputs."
+            )
+
+        st.divider()
+
+        # ── Structured outputs (course rubric: demand summary, high-load IDs, scheduling) ──
+        with st.expander("📋 Structured planning outputs (demand summary · high-load zones · scheduling)", expanded=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                st.markdown("**Charging demand summary**")
+                st.json(report.get("charging_demand_summary") or {})
+            with c2:
+                st.markdown("**High-load zone IDs (ranked)**")
+                st.json(report.get("high_load_locations") or [])
+            st.markdown("**Charger placement priorities**")
+            st.json(report.get("charger_placement_priorities") or [])
+            st.markdown("**Scheduling insights**")
+            st.json(report.get("scheduling_insights") or {})
+            st.markdown("**Grounding & retrieval**")
+            st.json(gr)
+
         st.divider()
 
         # ── Demand heatmap ──
@@ -1587,6 +1627,21 @@ def page_agentic_planner():
             ]
             for k, v in stats.items():
                 md_lines.append(f"| {k.replace('_', ' ').title()} | {v} |")
+            cd = report.get("charging_demand_summary")
+            if cd:
+                md_lines += ["", "## Charging demand summary", "", f"```json\n{json.dumps(cd, indent=2)}\n```"]
+            hl = report.get("high_load_locations")
+            if hl:
+                md_lines += ["", "## High-load locations (ranked)", ""]
+                for row in hl:
+                    md_lines.append(
+                        f"- Zone **{row['zone_id']}** (rank {row['rank']}): "
+                        f"{row['predicted_occupancy_pct']:.1f}% occ, "
+                        f"{row['predicted_volume_kwh']:.1f} kWh"
+                    )
+            si = report.get("scheduling_insights")
+            if si:
+                md_lines += ["", "## Scheduling insights", "", f"```json\n{json.dumps(si, indent=2)}\n```"]
             md_lines += [
                 f"",
                 f"## Anomalies Detected ({len(anomalies)} zones)",
@@ -1634,11 +1689,11 @@ def page_agentic_planner():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {
-    "Overview": page_overview,
-    "Model Comparison": page_model_comparison,
-    "Predictions Explorer": page_predictions,
-    "Feature Importance": page_feature_importance,
-    "Zone Analysis": page_zone_analysis,
-    "About": page_about,
     "🤖 Agentic Planner": page_agentic_planner,
+    "📊 Overview": page_overview,
+    "📈 Model Comparison": page_model_comparison,
+    "🔍 Predictions Explorer": page_predictions,
+    "🎯 Feature Importance": page_feature_importance,
+    "🗺️ Zone Analysis": page_zone_analysis,
+    "ℹ️ About": page_about,
 }[page]()

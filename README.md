@@ -54,6 +54,31 @@
 
 ---
 
+## End-semester submission checklist (rubric alignment)
+
+This table maps the **GenAI & Agentic AI** end-sem evaluation components to artifacts in this repository.
+
+| Component (weight) | Where it is satisfied |
+|--------------------|------------------------|
+| **Technical implementation (35%)** | `agent/` — LangGraph `StateGraph` (`graph.py`), explicit `SynoraState` (`state.py`), six nodes (`nodes.py`), Chroma RAG (`rag_engine.py`, `rag_pipeline.py`). Structured JSON report fields: `charging_demand_summary`, `high_load_zone_ids` / `high_load_locations`, `charger_placement_priorities`, `scheduling_insights`, `grounding_and_retrieval`. ML layer supports demand signals; **agentic** path is mandatory for grading. |
+| **GitHub & code quality (15%)** | Modular `agent/` vs UI in `streamlit_app.py`, `requirements.txt`, `.env.example`, `LICENSE`, notebooks under `notebooks/`. |
+| **Hosted demo (15%)** | Deploy with [Streamlit Community Cloud](https://streamlit.io/cloud) or a Hugging Face Space (see **Hosted demo** below). |
+| **Project report — LaTeX (20%)** | `report.tex` — compile with `pdflatex report.tex` (twice if TOC updates). |
+| **Project video (15%)** | Record a **~5 min** walkthrough: ML overview → **Agentic Planner** query → live node trace → RAG sources → structured expander → export JSON. |
+
+**Milestone 2 (agentic) functional coverage**
+
+| Requirement | Implementation |
+|-------------|----------------|
+| Analyse demand for high-load locations | `demand_forecaster`, `charging_demand_summary`, ranked `high_load_locations` |
+| Retrieve planning guidelines | `rag_retriever` → ChromaDB collection `synora_knowledge`; graceful degradation if retrieval fails |
+| Charger placement recommendations | `planning_agent` + `charger_placement_priorities` in JSON report |
+| Scheduling optimization insights | `scheduling_insights` dict + **Scheduling & operations** section in LLM / rule-based markdown |
+| LangGraph workflow & state | `graph.py`, `SynoraState` |
+| Structured output / evaluation | Streamlit expander **Structured planning outputs**, downloadable JSON/MD |
+
+---
+
 ## Technology Stack
 
 | Component | Technology |
@@ -62,7 +87,7 @@
 | **Agent Framework** | LangGraph ≥ 0.2, LangChain ≥ 0.3 |
 | **Vector Database** | ChromaDB ≥ 0.5 (persisted at `data/vectorstore/`) |
 | **Embeddings** | `sentence-transformers/all-MiniLM-L6-v2` (local, no API key) |
-| **LLM** | Anthropic Claude `claude-sonnet-4-20250514` (GPT-4o fallback) |
+| **LLM** | Default: Groq `llama-3.3-70b-versatile` (free tier); optional Anthropic Claude `claude-sonnet-4-20250514` or OpenAI `gpt-4o` |
 | **Dashboard** | Streamlit ≥ 1.31 |
 | **Visualisation** | Plotly, Matplotlib, Seaborn |
 | **Language** | Python 3.9+ |
@@ -154,13 +179,13 @@ data/vectorstore/  ←  Persistent ChromaDB store
 
 | Page | Description |
 |---|---|
-| **Overview** | KPI cards, R²/MAE bar charts, metrics table, hourly demand patterns, all-models overlay |
-| **Model Comparison** | Model metric cards, grouped bars, radar chart |
-| **Predictions Explorer** | Time series, scatter plot, error histogram, residual plot, data table |
-| **Feature Importance** | Top-N bars, cross-model normalised comparison, importance table |
-| **Zone Analysis** | Interactive Shenzhen map, MAE distribution, demand vs error scatter, zone rankings |
-| **About** | Project overview, tech stack, dataset citation |
-| **🤖 Agentic Planner** | Query input, live node trace, demand heatmaps, anomaly alerts, RAG source viewer, recommendation, human approval widget, JSON/MD export |
+| **📊 Overview** | KPI cards, R²/MAE bar charts, metrics table, hourly demand patterns, all-models overlay |
+| **📈 Model Comparison** | Model metric cards, grouped bars, radar chart |
+| **🔍 Predictions Explorer** | Time series, scatter plot, error histogram, residual plot, data table |
+| **🎯 Feature Importance** | Top-N bars, cross-model normalised comparison, importance table |
+| **🗺️ Zone Analysis** | Interactive Shenzhen map, MAE distribution, demand vs error scatter, zone rankings |
+| **ℹ️ About** | Project overview, tech stack, dataset citation |
+| **🤖 Agentic Planner** | Query input, live node trace, demand heatmaps, anomaly alerts, RAG source viewer, structured rubric JSON (demand summary, high-load IDs, scheduling), recommendation, human approval widget, JSON/MD export |
 
 ---
 
@@ -187,10 +212,11 @@ data/vectorstore/  ←  Persistent ChromaDB store
 
 ```
 Synora/
-├── streamlit_app.py              ← Dashboard (1,608 lines, 7 pages)
+├── streamlit_app.py              ← Dashboard (Streamlit UI + Agentic Planner)
 ├── requirements.txt              ← All Python dependencies
 ├── architecture.md               ← Full architecture diagrams
 ├── README.md                     ← This file
+├── .env.example                  ← API key template (copy to .env locally)
 ├── report.tex                    ← LaTeX technical report
 │
 ├── agent/                        ← Agentic AI layer
@@ -249,27 +275,44 @@ python3 -m venv .venv && source .venv/bin/activate
 # 3. Install all dependencies
 python3 -m pip install -r requirements.txt
 
-# 4. Set your LLM API key (optional — fallback works without it)
-export ANTHROPIC_API_KEY="sk-ant-..."
-# or for OpenAI:
+# 4. API keys (optional — rule-based planner works without any key)
+#    Copy .env.example → .env, fill keys, then export, or use:
+export GROQ_API_KEY="gsk_..."           # recommended free tier
+# export ANTHROPIC_API_KEY="sk-ant-..."
 # export OPENAI_API_KEY="sk-..."
-# export MODEL_PROVIDER="openai"
+# export MODEL_PROVIDER="groq"        # groq | anthropic | openai
 
 # 5. Run the dashboard
 python3 -m streamlit run streamlit_app.py
 ```
 
-Then open **http://localhost:8501** and navigate to **🤖 Agentic Planner**.
+Then open **http://localhost:8501** and open **🤖 Agentic Planner** from the sidebar (it appears first in the navigation list).
 
 ### Environment Variables
 
+See [`.env.example`](.env.example) for a template. **Do not commit `.env`** (it is gitignored).
+
 | Variable | Required | Default | Description |
 |---|---|---|---|
-| `ANTHROPIC_API_KEY` | Optional | — | Claude claude-sonnet-4-20250514 API key |
-| `OPENAI_API_KEY` | Optional | — | GPT-4o fallback key |
-| `MODEL_PROVIDER` | Optional | `anthropic` | `"anthropic"` or `"openai"` |
+| `GROQ_API_KEY` | Optional | — | Groq API key (free); enables Llama 3.3 70B in the planner |
+| `ANTHROPIC_API_KEY` | Optional | — | Claude claude-sonnet-4-20250514 |
+| `OPENAI_API_KEY` | Optional | — | GPT-4o when `MODEL_PROVIDER=openai` |
+| `MODEL_PROVIDER` | Optional | `groq` | `groq`, `anthropic`, or `openai` |
 
 > **Without any API key:** the agent uses a deterministic rule-based planner. All other nodes (predict, detect, retrieve, report) work fully without any API key.
+
+### Hosted demo (Streamlit Community Cloud)
+
+1. Push this repo to GitHub (include `requirements.txt`, `streamlit_app.py`, `agent/`, `models/`, `data/vectorstore/` as your policy allows — large CSVs may stay out; the agent falls back if models/data are stubs).
+2. On [share.streamlit.io](https://share.streamlit.io), **New app** → select the repo → Main file: `streamlit_app.py`.
+3. Under **Secrets**, add TOML, for example:
+   ```toml
+   GROQ_API_KEY = "gsk_..."
+   MODEL_PROVIDER = "groq"
+   ```
+4. Redeploy. Put the public URL in your report cover sheet and video description.
+
+**Hugging Face Spaces:** create a **Docker** or **Gradio/Streamlit** Space, `COPY` the repo, `pip install -r requirements.txt`, set the same env vars under **Settings → Repository secrets**.
 
 ---
 

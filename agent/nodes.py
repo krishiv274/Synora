@@ -504,7 +504,7 @@ def rag_retriever(state: SynoraState) -> dict[str, Any]:
 
     State writes
     ------------
-    rag_context, rag_sources, agent_trace
+    rag_context, rag_sources, agent_trace, rag_retrieval_ok
     """
     from agent.rag_engine import ingest_all_data, query_context, get_zone_context
 
@@ -516,54 +516,69 @@ def rag_retriever(state: SynoraState) -> dict[str, Any]:
     anomalies: list[dict[str, Any]] = state.get("anomalies", [])
     predictions: dict[int, dict[str, float]] = state.get("predictions", {})
 
-    # Ensure vectorstore is populated
-    ingest_all_data()
+    try:
+        # Ensure vectorstore is populated
+        ingest_all_data()
 
-    # Build a rich retrieval query from context
-    anomaly_zone_ids = [a["zone_id"] for a in anomalies]
-    anomaly_descriptions = "; ".join(
-        f"Zone {a['zone_id']}: {a['reason']}" for a in anomalies[:3]
-    )
-    enriched_query = (
-        f"{query}. "
-        f"Analysed zones: {', '.join(str(z) for z in zone_ids[:8])}. "
-    )
-    if anomaly_descriptions:
-        enriched_query += f"Anomalies detected: {anomaly_descriptions}."
+        # Build a rich retrieval query from context
+        anomaly_zone_ids = [a["zone_id"] for a in anomalies]
+        anomaly_descriptions = "; ".join(
+            f"Zone {a['zone_id']}: {a['reason']}" for a in anomalies[:3]
+        )
+        enriched_query = (
+            f"{query}. "
+            f"Analysed zones: {', '.join(str(z) for z in zone_ids[:8])}. "
+        )
+        if anomaly_descriptions:
+            enriched_query += f"Anomalies detected: {anomaly_descriptions}."
 
-    # General query retrieval
-    general_docs = query_context(enriched_query, top_k=5)
+        # General query retrieval
+        general_docs = query_context(enriched_query, top_k=5)
 
-    # Per-anomaly-zone context
-    zone_docs: list[dict[str, Any]] = []
-    if anomaly_zone_ids:
-        zone_docs = get_zone_context(anomaly_zone_ids[:5], top_k_per_zone=2)
+        # Per-anomaly-zone context
+        zone_docs: list[dict[str, Any]] = []
+        if anomaly_zone_ids:
+            zone_docs = get_zone_context(anomaly_zone_ids[:5], top_k_per_zone=2)
 
-    # High-demand general docs if no anomalies
-    if not anomaly_zone_ids and zone_ids:
-        zone_docs = get_zone_context(zone_ids[:3], top_k_per_zone=2)
+        # High-demand general docs if no anomalies
+        if not anomaly_zone_ids and zone_ids:
+            zone_docs = get_zone_context(zone_ids[:3], top_k_per_zone=2)
 
-    # Merge and deduplicate
-    seen_ids: set[str] = set()
-    all_docs: list[dict[str, Any]] = []
-    for doc in general_docs + zone_docs:
-        if doc["id"] not in seen_ids:
-            seen_ids.add(doc["id"])
-            all_docs.append(doc)
+        # Merge and deduplicate
+        seen_ids: set[str] = set()
+        all_docs: list[dict[str, Any]] = []
+        for doc in general_docs + zone_docs:
+            if doc["id"] not in seen_ids:
+                seen_ids.add(doc["id"])
+                all_docs.append(doc)
 
-    rag_context = [d["document"] for d in all_docs]
-    rag_sources = [d["id"] for d in all_docs]
+        rag_context = [d["document"] for d in all_docs]
+        rag_sources = [d["id"] for d in all_docs]
 
-    trace.append(
-        f"✅ rag_retriever: Retrieved {len(all_docs)} context documents "
-        f"(sources: {', '.join(rag_sources[:4])}{'…' if len(rag_sources) > 4 else ''})."
-    )
+        trace.append(
+            f"✅ rag_retriever: Retrieved {len(all_docs)} context documents "
+            f"(sources: {', '.join(rag_sources[:4])}{'…' if len(rag_sources) > 4 else ''})."
+        )
 
-    return {
-        "rag_context": rag_context,
-        "rag_sources": rag_sources,
-        "agent_trace": trace,
-    }
+        return {
+            "rag_context": rag_context,
+            "rag_sources": rag_sources,
+            "agent_trace": trace,
+            "rag_retrieval_ok": True,
+        }
+    except Exception as exc:
+        logger.warning("RAG retrieval failed: %s", exc, exc_info=True)
+        msg = str(exc)[:160]
+        trace.append(
+            f"⚠️ rag_retriever: Retrieval failed ({msg}). "
+            "Pipeline continues without KB grounding — use conservative planning."
+        )
+        return {
+            "rag_context": [],
+            "rag_sources": [],
+            "agent_trace": trace,
+            "rag_retrieval_ok": False,
+        }
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -649,6 +664,7 @@ TASK: Generate a detailed infrastructure planning recommendation that:
 4. Provides 30/90/180-day action timeline
 5. Notes which zones could absorb overflow from high-demand zones
 6. Estimates investment required
+7. Adds a short **Scheduling / operations** subsection: peak vs off-peak windows, when to run maintenance, and how TOU pricing interacts with the forecast window
 
 Format your response as:
 
@@ -663,6 +679,9 @@ Format your response as:
 
 ## DEMAND REROUTING PLAN
 (which zones can absorb excess demand from which others)
+
+## SCHEDULING & OPERATIONS
+(peak windows, maintenance windows, TOU / reservation ideas tied to the forecast)
 
 ## INVESTMENT ESTIMATE
 (rough capital estimates)
@@ -793,6 +812,17 @@ def _rule_based_recommendation(
         "- Evaluate land acquisition for dedicated EV charging hubs.",
         "- Commission battery storage (BESS) at top-3 demand zones.",
         "",
+    ]
+
+    tw_s = time_window.get("start", "N/A")
+    tw_e = time_window.get("end", "N/A")
+    lines += [
+        "## SCHEDULING & OPERATIONS",
+        f"- **Forecast window:** {tw_s} → {tw_e}",
+        "- **Peak windows:** 07:00–10:00 and 16:00–20:00 — cap new maintenance; prioritise incident response.",
+        "- **Low-impact window:** 01:00–05:00 — pricing updates, OTA firmware, non-critical grid upgrades.",
+        "- **TOU:** +40–60% price multiplier during peaks at anomaly zones; −10% shoulder incentive.",
+        "",
         "## DEMAND REROUTING PLAN",
     ]
 
@@ -826,6 +856,111 @@ def _rule_based_recommendation(
     return "\n".join(lines)
 
 
+def _high_load_locations(
+    predictions: dict[int, dict[str, float]],
+    top_n: int = 5,
+) -> list[dict[str, Any]]:
+    """Rank zones by predicted occupancy for rubric ``high-load location ID'' outputs."""
+    ranked = sorted(
+        predictions.items(),
+        key=lambda kv: kv[1].get("occupancy", 0.0),
+        reverse=True,
+    )[:top_n]
+    out: list[dict[str, Any]] = []
+    for i, (zid, p) in enumerate(ranked):
+        out.append(
+            {
+                "zone_id": int(zid),
+                "rank": i + 1,
+                "predicted_occupancy_pct": round(float(p.get("occupancy", 0.0)), 2),
+                "predicted_volume_kwh": round(float(p.get("volume", 0.0)), 2),
+            }
+        )
+    return out
+
+
+def _build_charging_demand_summary(
+    zone_ids: list[int],
+    time_window: dict[str, str],
+    predictions: dict[int, dict[str, float]],
+    anomalies: list[dict[str, Any]],
+    rag_ok: bool,
+    n_rag_docs: int,
+) -> dict[str, Any]:
+    """Structured charging-demand summary for evaluation / JSON export."""
+    n = len(predictions)
+    occs = [p["occupancy"] for p in predictions.values()] if predictions else []
+    vols = [p["volume"] for p in predictions.values()] if predictions else []
+    narrative = (
+        f"Analysed {n} traffic-analysis zone(s) for the forecast window; "
+        f"{len(anomalies)} zone(s) exceed anomaly thresholds. "
+    )
+    if not rag_ok or n_rag_docs == 0:
+        narrative += (
+            "Retrieval did not supply external planning documents — "
+            "recommendations rely on ML predictions and built-in heuristics."
+        )
+    else:
+        narrative += f"Retrieval supplied {n_rag_docs} knowledge-base document(s) for LLM grounding."
+
+    return {
+        "zones_analysed_count": n,
+        "zone_ids_analysed": [int(z) for z in zone_ids[:20]],
+        "forecast_window": time_window,
+        "mean_predicted_occupancy_pct": round(float(np.mean(occs)), 2) if occs else 0.0,
+        "max_predicted_occupancy_pct": round(float(max(occs)), 2) if occs else 0.0,
+        "mean_predicted_volume_kwh": round(float(np.mean(vols)), 2) if vols else 0.0,
+        "max_predicted_volume_kwh": round(float(max(vols)), 2) if vols else 0.0,
+        "zones_flagged_anomaly": len(anomalies),
+        "rag_grounding_documents": n_rag_docs,
+        "rag_retrieval_ok": rag_ok,
+        "narrative": narrative,
+    }
+
+
+def _scheduling_insights(
+    time_window: dict[str, str],
+    predictions: dict[int, dict[str, float]],
+) -> dict[str, Any]:
+    """
+    Heuristic scheduling / operations insights (complements ML + LLM text).
+
+    Not a full MILP solver — documents optimization-style reasoning for coursework.
+    """
+    try:
+        start = datetime.strptime(
+            time_window.get("start", ""), "%Y-%m-%d %H:%M"
+        )
+        anchor_h = start.hour
+    except Exception:
+        anchor_h = datetime.now().hour
+
+    occs = [p["occupancy"] for p in predictions.values()] if predictions else []
+    mean_occ = float(np.mean(occs)) if occs else 0.0
+    if mean_occ > 60:
+        tier = "high"
+    elif mean_occ > 35:
+        tier = "moderate"
+    else:
+        tier = "low"
+
+    return {
+        "forecast_anchor_hour_local": anchor_h,
+        "expected_system_load_tier": tier,
+        "peak_demand_windows_local": "07:00–10:00 and 16:00–20:00 (typical urban China EV peaks)",
+        "maintenance_and_low_impact_windows": "01:00–05:00 for firmware, pricing rules, and non-critical maintenance",
+        "scheduling_optimization_note": (
+            "Apply time-of-use tariffs and optional reservation caps during peak windows; "
+            "shift depot / fleet charging toward post-20:00 where contracts allow."
+        ),
+        "load_shifting_heuristic_pct": "10–18% of discretionary sessions estimated movable with ±15% price nudge",
+        "optimization_basis": (
+            "Heuristic policy from forecast anchor hour and mean predicted occupancy "
+            "across analysed zones (see charging_demand_summary)."
+        ),
+    }
+
+
 # ═══════════════════════════════════════════════════════════════════════════════
 # Node 5 — report_generator
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -857,6 +992,7 @@ def report_generator(state: SynoraState) -> dict[str, Any]:
     time_window: dict[str, str] = state.get("time_window", {})
     zone_ids: list[int] = state.get("zone_ids", [])
     query: str = state.get("query", "")
+    rag_ok: bool = bool(state.get("rag_retrieval_ok", True))
 
     # Detect how many new piles are recommended (for human_review_gate)
     pile_numbers = re.findall(
@@ -882,6 +1018,46 @@ def report_generator(state: SynoraState) -> dict[str, Any]:
     ]
     max_surge_pct = max(surges) if surges else 0.0
 
+    high_load_locs = _high_load_locations(predictions, top_n=5)
+    high_load_ids = [row["zone_id"] for row in high_load_locs]
+
+    if anomalies:
+        charger_placement = [
+            {
+                "zone_id": int(a["zone_id"]),
+                "severity": a.get("severity", "medium"),
+                "rationale": (a.get("reason", "") or "")[:280],
+                "recommended_action": "prioritise new DC capacity or demand management",
+            }
+            for a in sorted(
+                anomalies,
+                key=lambda x: float(x.get("occupancy", 0.0)),
+                reverse=True,
+            )[:8]
+        ]
+    else:
+        charger_placement = [
+            {
+                "zone_id": row["zone_id"],
+                "severity": "monitor",
+                "rationale": (
+                    f"Top-{row['rank']} predicted occupancy "
+                    f"{row['predicted_occupancy_pct']:.1f}% (no anomaly threshold breach)."
+                ),
+                "recommended_action": "watchlist; pre-procurement if trend persists",
+            }
+            for row in high_load_locs[:3]
+        ]
+
+    n_rag = len(rag_sources)
+    mitig = (
+        "Recommendations are grounded where cited documents appear above. "
+        "When retrieval is empty or failed, treat quantitative claims as ML-backed only "
+        "and prefer conservative capex."
+        if (not rag_ok or n_rag == 0)
+        else "RAG context present — require citations to KB snippets in operator review."
+    )
+
     report: dict[str, Any] = {
         "report_id": f"synora_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         "generated_at": datetime.now().isoformat(),
@@ -895,6 +1071,18 @@ def report_generator(state: SynoraState) -> dict[str, Any]:
             "max_predicted_volume_kwh": round(max_vol, 2),
             "zones_at_risk": len(anomalies),
             "max_demand_surge_pct": round(max_surge_pct, 1),
+        },
+        "charging_demand_summary": _build_charging_demand_summary(
+            zone_ids, time_window, predictions, anomalies, rag_ok, n_rag
+        ),
+        "high_load_locations": high_load_locs,
+        "high_load_zone_ids": high_load_ids,
+        "charger_placement_priorities": charger_placement,
+        "scheduling_insights": _scheduling_insights(time_window, predictions),
+        "grounding_and_retrieval": {
+            "rag_retrieval_ok": rag_ok,
+            "documents_retrieved": n_rag,
+            "hallucination_mitigation_note": mitig,
         },
         "anomalies": anomalies,
         "predictions_by_zone": {
