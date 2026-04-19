@@ -27,6 +27,3 @@ env/
 # Temporary files
 _test_*.py
 _compare*.py
-
-# Large data files (exceed GitHub 100MB limit)
-data/processed/final_featured_dataset.csv

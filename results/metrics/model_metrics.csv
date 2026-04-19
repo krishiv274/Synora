@@ -1,3 +1,7 @@
-version https://git-lfs.github.com/spec/v1
-oid sha256:e3c725c0fba75a467e5b19dfc25b4b85d389275ed0c60283dcf5279c8d1a7710
-size 729
+target,model,MAE,RMSE,R2,MAPE (%)
+occupancy,RandomForest,1.2502,2.5798,0.9837,1708150.11
+volume,RandomForest,54.2722,202.8124,0.9437,98958673.64
+occupancy,XGBoost,1.2368,2.5522,0.9827,1689853.7
+volume,XGBoost,53.7694,200.9333,0.9428,98041788.04
+occupancy,LightGBM,1.2467,2.5725,0.9834,1703320.42
+volume,LightGBM,53.2131,198.8546,0.9418,97027543.25
