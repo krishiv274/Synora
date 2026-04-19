@@ -15,6 +15,7 @@ from pathlib import Path
 import joblib
 from synora_agent.phase0_contracts import apply_phase0_defaults, run_phase0_preflight
 from synora_agent.phase1_state import apply_phase1_defaults, run_phase1_validation
+from synora_agent.phase2_foundation import apply_phase2_defaults, run_phase2_validation
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -59,13 +60,15 @@ MODEL_FILE_KEYS = {"RandomForest": "randomforest", "XGBoost": "xgboost", "LightG
 
 
 def init_phase0_state() -> None:
-    """Initialize and validate Phase 0 and Phase 1 contracts in session state."""
+    """Initialize and validate Phase 0-2 contracts in session state."""
     current = st.session_state.get("agent_state", {})
     state = apply_phase0_defaults(current)
     state = apply_phase1_defaults(state)
+    state = apply_phase2_defaults(state)
     st.session_state["agent_state"] = state
     st.session_state["phase0_preflight"] = run_phase0_preflight(st.session_state["agent_state"])
     st.session_state["phase1_validation"] = run_phase1_validation(st.session_state["agent_state"])
+    st.session_state["phase2_validation"] = run_phase2_validation(st.session_state["agent_state"], Path("."))
 
 
 init_phase0_state()
@@ -463,6 +466,21 @@ with st.sidebar:
             for err in phase1_result.errors:
                 st.caption(f"- {err}")
             for warn in phase1_result.warnings:
+                st.caption(f"- Warning: {warn}")
+
+    phase2_result = st.session_state.get("phase2_validation")
+    if phase2_result is not None:
+        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
+        if phase2_result.passed:
+            retrieval_flag = "OK" if phase2_result.retrieval_precision_ok else "LOW"
+            st.success(f"Phase 2 validation: PASS (retrieval: {retrieval_flag})")
+            for warn in phase2_result.warnings:
+                st.caption(f"- Warning: {warn}")
+        else:
+            st.error("Phase 2 validation: FAIL")
+            for err in phase2_result.errors:
+                st.caption(f"- {err}")
+            for warn in phase2_result.warnings:
                 st.caption(f"- Warning: {warn}")
 
     # ── Spacer + footer ──

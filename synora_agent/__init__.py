@@ -19,6 +19,16 @@ from .phase1_state import (
     run_phase1_validation,
     validate_node_transition,
 )
+from .phase2_foundation import (
+    DEFAULT_DATA_ASSETS,
+    DEFAULT_RETRIEVAL_CONFIG,
+    PHASE2_VERSION,
+    apply_phase2_defaults,
+    build_evidence_payload,
+    build_guideline_corpus,
+    retrieve_guidelines,
+    run_phase2_validation,
+)
 
 __all__ = [
     "PHASE0_DEFAULTS",
@@ -36,4 +46,12 @@ __all__ = [
     "append_audit_entry",
     "run_phase1_validation",
     "validate_node_transition",
+    "DEFAULT_DATA_ASSETS",
+    "DEFAULT_RETRIEVAL_CONFIG",
+    "PHASE2_VERSION",
+    "apply_phase2_defaults",
+    "build_evidence_payload",
+    "build_guideline_corpus",
+    "retrieve_guidelines",
+    "run_phase2_validation",
 ]
