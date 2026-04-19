@@ -19,6 +19,7 @@ from synora_agent.phase2_foundation import apply_phase2_defaults, run_phase2_val
 from synora_agent.phase3_reasoning import apply_phase3_defaults, run_phase3_pipeline
 from synora_agent.phase4_ranking import apply_phase4_defaults, run_phase4_pipeline
 from synora_agent.phase5_validation import apply_phase5_defaults, run_phase5_validation
+from synora_agent.phase6_operations import apply_phase6_defaults, run_phase6_operations
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -63,7 +64,7 @@ MODEL_FILE_KEYS = {"RandomForest": "randomforest", "XGBoost": "xgboost", "LightG
 
 
 def init_phase0_state() -> None:
-    """Initialize and validate Phase 0-5 contracts in session state."""
+    """Initialize and validate Phase 0-6 contracts in session state."""
     current = st.session_state.get("agent_state", {})
     state = apply_phase0_defaults(current)
     state = apply_phase1_defaults(state)
@@ -71,6 +72,7 @@ def init_phase0_state() -> None:
     state = apply_phase3_defaults(state)
     state = apply_phase4_defaults(state)
     state = apply_phase5_defaults(state)
+    state = apply_phase6_defaults(state)
 
     phase0_result = run_phase0_preflight(state)
     phase1_result = run_phase1_validation(state)
@@ -78,14 +80,16 @@ def init_phase0_state() -> None:
     phase3_state, phase3_result = run_phase3_pipeline(state, Path("."))
     phase4_state, phase4_result = run_phase4_pipeline(phase3_state)
     phase5_state, phase5_result = run_phase5_validation(phase4_state, Path("."))
+    phase6_state, phase6_result = run_phase6_operations(phase5_state)
 
-    st.session_state["agent_state"] = phase5_state
+    st.session_state["agent_state"] = phase6_state
     st.session_state["phase0_preflight"] = phase0_result
     st.session_state["phase1_validation"] = phase1_result
     st.session_state["phase2_validation"] = phase2_result
     st.session_state["phase3_validation"] = phase3_result
     st.session_state["phase4_validation"] = phase4_result
     st.session_state["phase5_validation"] = phase5_result
+    st.session_state["phase6_validation"] = phase6_result
 
 
 init_phase0_state()
@@ -564,6 +568,24 @@ with st.sidebar:
         for err in phase5_result.errors:
             st.caption(f"- {err}")
         for warn in phase5_result.warnings:
+            st.caption(f"- Warning: {warn}")
+
+    phase6_result = st.session_state.get("phase6_validation")
+    if phase6_result is not None:
+        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
+        if phase6_result.passed and phase6_result.handoff_ready:
+            st.success("Phase 6 validation: PASS (handoff ready)")
+        else:
+            st.error("Phase 6 validation: FAIL (handoff not ready)")
+
+        st.caption(f"- Docs complete: {phase6_result.docs_complete}")
+        st.caption(f"- Runbook complete: {phase6_result.runbook_complete}")
+        st.caption(f"- Governance configured: {phase6_result.governance_configured}")
+        st.caption(f"- KPI schema ready: {phase6_result.kpi_schema_ready}")
+
+        for err in phase6_result.errors:
+            st.caption(f"- {err}")
+        for warn in phase6_result.warnings:
             st.caption(f"- Warning: {warn}")
 
     # ── Spacer + footer ──

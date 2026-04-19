@@ -44,6 +44,11 @@ from .phase5_validation import (
     apply_phase5_defaults,
     run_phase5_validation,
 )
+from .phase6_operations import (
+    PHASE6_VERSION,
+    apply_phase6_defaults,
+    run_phase6_operations,
+)
 
 __all__ = [
     "PHASE0_DEFAULTS",
@@ -78,4 +83,7 @@ __all__ = [
     "PHASE5_VERSION",
     "apply_phase5_defaults",
     "run_phase5_validation",
+    "PHASE6_VERSION",
+    "apply_phase6_defaults",
+    "run_phase6_operations",
 ]
