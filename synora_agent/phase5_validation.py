@@ -65,18 +65,18 @@ def _load_predictions(project_root: Path, state: Mapping[str, Any]) -> pd.DataFr
         return pd.DataFrame()
 
 
-def _gate_backtest_persistence(state: Mapping[str, Any], project_root: Path) -> Tuple[bool, str]:
+def _gate_backtest_persistence(state: Mapping[str, Any], project_root: Path) -> Tuple[bool, str, bool]:
     """Validate that recommendation targets align with persistently high-load zones."""
     recs = list(state.get("ranked_recommendations", []))
     if not recs:
-        return False, "No ranked recommendations available for persistence check."
+        return False, "No ranked recommendations available for persistence check.", False
 
     df = _load_predictions(project_root, state)
     if df.empty:
-        return True, "Predictions unavailable; skipped persistence check with warning."
+        return True, "Predictions unavailable; skipped persistence check with warning.", True
 
     if "zone_id" not in df.columns:
-        return False, "Predictions data missing zone_id for persistence check."
+        return False, "Predictions data missing zone_id for persistence check.", False
 
     value_col = None
     for candidate in [
@@ -91,25 +91,25 @@ def _gate_backtest_persistence(state: Mapping[str, Any], project_root: Path) -> 
             break
 
     if value_col is None:
-        return False, "Predictions data missing occupancy-like column for persistence check."
+        return False, "Predictions data missing occupancy-like column for persistence check.", False
 
     zone_means = df.groupby("zone_id")[value_col].mean(numeric_only=True)
     if zone_means.empty:
-        return False, "Unable to compute zone persistence baseline."
+        return False, "Unable to compute zone persistence baseline.", False
 
     threshold = float(zone_means.quantile(0.8))
     high_zones = {str(z) for z in zone_means[zone_means >= threshold].index}
 
     targeted = [str(r.get("zone_id")) for r in recs if r.get("zone_id") not in (None, "citywide")]
     if not targeted:
-        return True, "No zone-specific actions; persistence gate treated as pass for citywide-only strategy."
+        return True, "No zone-specific actions; persistence gate treated as pass for citywide-only strategy.", True
 
     overlap = sum(1 for z in targeted if z in high_zones)
     ratio = overlap / len(targeted)
 
     req = float(state.get("phase5_config", {}).get("persistence_threshold", 0.5))
     ok = ratio >= req
-    return ok, f"Persistence overlap ratio={ratio:.2f}, threshold={req:.2f}."
+    return ok, f"Persistence overlap ratio={ratio:.2f}, threshold={req:.2f}.", False
 
 
 def _gate_scenarios(state: Mapping[str, Any]) -> Tuple[Dict[str, bool], List[str]]:
@@ -221,11 +221,11 @@ def run_phase5_validation(state: Mapping[str, Any] | None, project_root: Path) -
         errors.extend(rec_errors)
 
     # Backtest persistence gate.
-    persistence_ok, persistence_note = _gate_backtest_persistence(state, project_root)
+    persistence_ok, persistence_note, persistence_warn_only = _gate_backtest_persistence(state, project_root)
     gates["backtest_persistence"] = persistence_ok
-    if persistence_ok:
+    if persistence_ok and persistence_warn_only:
         warnings.append(persistence_note)
-    else:
+    elif not persistence_ok:
         errors.append(persistence_note)
 
     # Scenario suite gate.

@@ -8,6 +8,8 @@ Models: Random Forest · XGBoost · LightGBM
 import streamlit as st
 import pandas as pd
 import numpy as np
+import os
+import importlib
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
@@ -15,7 +17,12 @@ from pathlib import Path
 import joblib
 from synora_agent.phase0_contracts import apply_phase0_defaults, run_phase0_preflight
 from synora_agent.phase1_state import apply_phase1_defaults, run_phase1_validation
-from synora_agent.phase2_foundation import apply_phase2_defaults, run_phase2_validation
+from synora_agent.phase2_foundation import (
+    apply_phase2_defaults,
+    build_guideline_corpus,
+    retrieve_guidelines,
+    run_phase2_validation,
+)
 from synora_agent.phase3_reasoning import apply_phase3_defaults, run_phase3_pipeline
 from synora_agent.phase4_ranking import apply_phase4_defaults, run_phase4_pipeline
 from synora_agent.phase5_validation import apply_phase5_defaults, run_phase5_validation
@@ -131,13 +138,13 @@ section[data-testid="stSidebar"] {
     background: linear-gradient(165deg, #0a0a1a 0%, #0f0f28 35%, #161035 70%, #1a1040 100%);
     border-right: 1px solid rgba(108,99,255,0.12);
     overflow-x: hidden !important;
-    overflow-y: auto !important;
+    overflow-y: hidden !important;
     max-height: 100vh;
     box-shadow: 4px 0 30px rgba(0,0,0,0.3);
 }
 section[data-testid="stSidebar"] > div:first-child {
     overflow-x: hidden !important;
-    overflow-y: auto !important;
+    overflow-y: hidden !important;
     display: flex; flex-direction: column; min-height: 100vh;
 }
 section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span,
@@ -383,6 +390,253 @@ def section_header(title, subtitle=""):
         st.markdown(f'<div class="section-sub">{subtitle}</div>', unsafe_allow_html=True)
 
 
+def build_local_pipeline_context() -> dict:
+    """Collect compact context from the in-memory phase pipeline for assistant responses."""
+    state = st.session_state.get("agent_state", {})
+    recs = list(state.get("ranked_recommendations", []))
+
+    phase_status = {
+        "phase0": bool(getattr(st.session_state.get("phase0_preflight"), "passed", False)),
+        "phase1": bool(getattr(st.session_state.get("phase1_validation"), "passed", False)),
+        "phase2": bool(getattr(st.session_state.get("phase2_validation"), "passed", False)),
+        "phase3": bool(getattr(st.session_state.get("phase3_validation"), "passed", False)),
+        "phase4": bool(getattr(st.session_state.get("phase4_validation"), "passed", False)),
+        "phase5": bool(getattr(st.session_state.get("phase5_validation"), "quality_gate_passed", False)),
+        "phase6": bool(getattr(st.session_state.get("phase6_validation"), "handoff_ready", False)),
+    }
+
+    top_recs = recs[:5]
+    phase_errors = {
+        "phase0_errors": list(getattr(st.session_state.get("phase0_preflight"), "errors", [])),
+        "phase1_errors": list(getattr(st.session_state.get("phase1_validation"), "errors", [])),
+        "phase2_errors": list(getattr(st.session_state.get("phase2_validation"), "errors", [])),
+        "phase3_errors": list(getattr(st.session_state.get("phase3_validation"), "errors", [])),
+        "phase4_errors": list(getattr(st.session_state.get("phase4_validation"), "errors", [])),
+        "phase5_errors": list(getattr(st.session_state.get("phase5_validation"), "errors", [])),
+        "phase6_errors": list(getattr(st.session_state.get("phase6_validation"), "errors", [])),
+    }
+
+    return {
+        "objective_weights": state.get("objective_weights", {}),
+        "phase_status": phase_status,
+        "phase_errors": phase_errors,
+        "recommendation_count": len(recs),
+        "top_recommendations": top_recs,
+        "confidence_notes": list(state.get("confidence_notes", []))[:6],
+        "phase4_metadata": state.get("phase4_metadata", {}),
+        "phase5_metadata": state.get("phase5_metadata", {}),
+        "phase6_metadata": state.get("phase6_metadata", {}),
+    }
+
+
+def retrieve_rag_context(user_prompt: str, state: dict) -> list[dict]:
+    """Retrieve planning guideline chunks for the user prompt using Phase 2 retriever."""
+    retrieval_cfg = state.get("retrieval_config", {}) if isinstance(state, dict) else {}
+    top_k = int(retrieval_cfg.get("top_k", 3))
+    min_relevance = float(retrieval_cfg.get("min_relevance", 0.1))
+    corpus = build_guideline_corpus()
+
+    docs = retrieve_guidelines(
+        query=user_prompt,
+        corpus=corpus,
+        top_k=top_k,
+        min_relevance=min_relevance,
+    )
+
+    if not docs:
+        docs = retrieve_guidelines(
+            query=user_prompt,
+            corpus=corpus,
+            top_k=max(2, top_k),
+            min_relevance=0.0,
+        )
+    return docs
+
+
+def local_pipeline_reply(user_prompt: str, context: dict, rag_docs: list[dict]) -> str:
+    """Generate a deterministic local fallback response using pipeline artifacts."""
+    phase_status = context.get("phase_status", {})
+    phase_errors = context.get("phase_errors", {})
+    recs = context.get("top_recommendations", [])
+    rec_count = context.get("recommendation_count", 0)
+    q = user_prompt.lower()
+
+    lines = []
+    lines.append("Using local pipeline fallback (Groq key not available or provider unavailable).")
+    lines.append("")
+    lines.append("Summary")
+    lines.append(f"- Current pipeline readiness: {phase_status}")
+    lines.append(f"- Ranked recommendations available: {rec_count}")
+    lines.append("")
+    lines.append("Analysis")
+    if any(not v for v in phase_status.values()):
+        lines.append("- Pipeline has failing phases; assistant is in diagnostics-first mode.")
+        for pname, errs in phase_errors.items():
+            if errs:
+                lines.append(f"  - {pname}: {errs[0]}")
+
+    if not recs:
+        lines.append("- No ranked recommendations are currently available. Run phases and verify gates first.")
+    else:
+        lines.append("- Top recommendation preview:")
+        for i, rec in enumerate(recs, start=1):
+            lines.append(
+                f"  {i}. zone={rec.get('zone_id')} action={rec.get('action')} "
+                f"score={rec.get('phase4_score', 'n/a')} confidence={rec.get('confidence_level', 'n/a')}"
+            )
+
+    lines.append("")
+    lines.append("Plan")
+    if "failed" in q or "error" in q or "issue" in q or "fix" in q:
+        lines.append("- Resolve failing phase gates in order: Phase 5 quality gate before Phase 6 handoff.")
+        lines.append("- Re-run from Phase 2 onwards after any config or retrieval change.")
+    elif "top" in q or "recommend" in q or "zone" in q:
+        lines.append("- Prioritize high-score recommendations with medium/high confidence first.")
+        lines.append("- Keep deployment advisory_only until quality gate is green.")
+    else:
+        lines.append("- If Phase 5 quality gate is false, resolve failed scenarios before policy-linked rollout.")
+        lines.append("- If Phase 6 handoff is false, keep governance mode advisory_only and publish runbook notes.")
+
+    lines.append("")
+    lines.append("Optimize")
+    lines.append("- Ask focused prompts like: 'show top 3 placement actions with highest score'.")
+    lines.append("- Ask: 'summarize failed gates and exact fixes'.")
+
+    if rag_docs:
+        lines.append("")
+        lines.append("RAG Guidance")
+        for doc in rag_docs[:3]:
+            lines.append(
+                f"- {doc.get('doc_id')} (score={doc.get('score')}): {doc.get('text')}"
+            )
+
+    lines.append("")
+    lines.append("References")
+    lines.append("- Source: in-memory Phase 0-6 pipeline state from this Streamlit session.")
+    lines.append("- Source: Phase 2 guideline retrieval corpus.")
+    lines.append(f"- User prompt interpreted: {user_prompt}")
+
+    return "\n".join(lines)
+
+
+def groq_or_local_reply(
+    user_prompt: str,
+    chat_history: list[dict],
+    provider_mode: str = "Auto",
+    selected_model: str | None = None,
+) -> tuple[str, str, dict]:
+    """Return (reply_text, provider_label, diagnostics) from selected provider or fallback."""
+    context = build_local_pipeline_context()
+    state = st.session_state.get("agent_state", {})
+    rag_docs = retrieve_rag_context(user_prompt, state)
+    api_key = os.getenv("GROQ_API_KEY", "").strip()
+    model_name = selected_model or os.getenv("GROQ_MODEL", "llama-3.3-70B-versatile")
+    mode = (provider_mode or "Auto").strip().lower()
+
+    diagnostics = {
+        "requested_mode": provider_mode,
+        "api_key_present": bool(api_key),
+        "model": model_name,
+        "provider": "Local Pipeline",
+        "prompt_length": len(user_prompt),
+        "history_messages_used": min(10, len(chat_history)),
+        "rag_docs_count": len(rag_docs),
+        "rag_doc_ids": [d.get("doc_id") for d in rag_docs],
+        "finish_reason": "",
+        "continued": False,
+        "error": "",
+    }
+
+    if mode == "local pipeline":
+        st.session_state["assistant_last_diag"] = diagnostics
+        return local_pipeline_reply(user_prompt, context, rag_docs), "Local Pipeline", diagnostics
+
+    if mode == "groq" and not api_key:
+        diagnostics["error"] = "GROQ_API_KEY is missing; falling back to local pipeline."
+        st.session_state["assistant_last_diag"] = diagnostics
+        return local_pipeline_reply(user_prompt, context, rag_docs), "Local Pipeline", diagnostics
+
+    if mode == "auto" and not api_key:
+        st.session_state["assistant_last_diag"] = diagnostics
+        return local_pipeline_reply(user_prompt, context, rag_docs), "Local Pipeline", diagnostics
+
+    try:
+        groq_module = importlib.import_module("groq")
+        Groq = getattr(groq_module, "Groq")
+        client = Groq(api_key=api_key)
+
+        system_prompt = (
+            "You are Synora AI Assistant for EV charging optimization. "
+            "Use the provided pipeline context and respond with practical, concise guidance. "
+            "Prefer structured responses with Summary, Analysis, Plan, Optimize, References."
+        )
+
+        compact_context = {
+            "phase_status": context.get("phase_status", {}),
+            "objective_weights": context.get("objective_weights", {}),
+            "recommendation_count": context.get("recommendation_count", 0),
+            "top_recommendations": context.get("top_recommendations", [])[:3],
+            "phase5_metadata": context.get("phase5_metadata", {}),
+            "phase6_metadata": context.get("phase6_metadata", {}),
+        }
+
+        messages = [{"role": "system", "content": system_prompt}]
+        messages.append({"role": "system", "content": f"Pipeline context: {compact_context}"})
+        messages.append({"role": "system", "content": f"Retrieved guidelines: {rag_docs}"})
+
+        for msg in chat_history[-10:]:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            if role in {"user", "assistant"} and isinstance(content, str):
+                messages.append({"role": role, "content": content})
+
+        messages.append({"role": "user", "content": user_prompt})
+
+        completion = client.chat.completions.create(
+            model=model_name,
+            messages=messages,
+            temperature=0.2,
+            max_tokens=1400,
+        )
+        answer = completion.choices[0].message.content or "No response returned from Groq."
+        finish_reason = getattr(completion.choices[0], "finish_reason", "") or ""
+
+        # If model stopped due to token limit, fetch one continuation chunk.
+        if finish_reason == "length" and answer.strip():
+            continuation_messages = list(messages)
+            continuation_messages.append({"role": "assistant", "content": answer})
+            continuation_messages.append(
+                {
+                    "role": "user",
+                    "content": (
+                        "Continue from exactly where you stopped. "
+                        "Do not repeat prior text. Complete the remaining answer only."
+                    ),
+                }
+            )
+            cont = client.chat.completions.create(
+                model=model_name,
+                messages=continuation_messages,
+                temperature=0.2,
+                max_tokens=900,
+            )
+            cont_text = cont.choices[0].message.content or ""
+            if cont_text.strip():
+                answer = f"{answer}\n\n{cont_text}"
+                diagnostics["continued"] = True
+            finish_reason = getattr(cont.choices[0], "finish_reason", finish_reason) or finish_reason
+
+        diagnostics["provider"] = f"Groq ({model_name})"
+        diagnostics["finish_reason"] = finish_reason
+        diagnostics["history_messages_used"] = sum(1 for m in messages if m.get("role") in {"user", "assistant"})
+        st.session_state["assistant_last_diag"] = diagnostics
+        return answer, f"Groq ({model_name})", diagnostics
+    except Exception as exc:
+        diagnostics["error"] = str(exc)
+        st.session_state["assistant_last_diag"] = diagnostics
+        return local_pipeline_reply(user_prompt, context, rag_docs), "Local Pipeline", diagnostics
+
+
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # SIDEBAR — Global target toggle + navigation
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -412,8 +666,8 @@ with st.sidebar:
     # ── Target toggle pill (glass card) ──
     st.markdown("""
     <div style="background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
-                border-radius:14px; padding:0.65rem 0.9rem; margin:0 0.3rem 0.3rem 0.3rem;">
-        <div style="font-size:0.62rem; font-weight:700; text-transform:uppercase;
+                border-radius:14px; padding:0.5rem 0.3rem 0.3rem 0.3rem; margin-bottom:0.1rem;">
+        <div style="font-size:0.65rem; font-weight:700; text-transform:uppercase;
                     letter-spacing:0.1em; opacity:0.35; margin-bottom:0.45rem; text-align:center;">Prediction Target</div>
     """, unsafe_allow_html=True)
 
@@ -432,13 +686,13 @@ with st.sidebar:
     # ── Navigation (glass card) ──
     st.markdown("""
     <div style="background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08);
-                border-radius:14px; padding:0.65rem 0.9rem; margin:0.3rem;">
-        <div style="font-size:0.62rem; font-weight:700; text-transform:uppercase;
+                border-radius:14px; padding:0.5rem 0.3rem 0.3rem 0.3rem; margin-bottom:0.1rem;">
+        <div style="font-size:0.65rem; font-weight:700; text-transform:uppercase;
                     letter-spacing:0.1em; opacity:0.35; margin-bottom:0.35rem; text-align:center;">Navigation</div>
     """, unsafe_allow_html=True)
 
     NAV_PAGES = ["Overview", "Model Comparison", "Predictions Explorer",
-                 "Feature Importance", "Zone Analysis", "About"]
+                 "Feature Importance", "Zone Analysis", "AI Assistant", "Debug Menu", "About"]
     page = st.radio(
         "Nav",
         NAV_PAGES,
@@ -452,7 +706,7 @@ with st.sidebar:
     # ── Active target badge ──
     badge_color = "#6C63FF" if target == "occupancy" else "#00C9A7"
     st.markdown(f"""
-    <div style="text-align:center; margin:0.7rem 0 0.4rem 0;">
+    <div style="text-align:center;">
         <span style="background:{badge_color}18; color:{badge_color}; border:1px solid {badge_color}40;
                      padding:0.35rem 1.1rem; border-radius:20px; font-size:0.78rem; font-weight:700;
                      backdrop-filter:blur(8px);">
@@ -461,137 +715,11 @@ with st.sidebar:
     </div>
     """, unsafe_allow_html=True)
 
-    phase0_result = st.session_state.get("phase0_preflight")
-    if phase0_result is not None:
-        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-        if phase0_result.passed:
-            st.success("Phase 0 preflight: PASS")
-            for warn in phase0_result.warnings:
-                st.caption(f"- Warning: {warn}")
-        else:
-            st.error("Phase 0 preflight: FAIL")
-            for err in phase0_result.errors:
-                st.caption(f"- {err}")
-            for warn in phase0_result.warnings:
-                st.caption(f"- Warning: {warn}")
-
-    phase1_result = st.session_state.get("phase1_validation")
-    if phase1_result is not None:
-        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-        if phase1_result.passed:
-            st.success(f"Phase 1 validation: PASS ({phase1_result.completeness:.0%} complete)")
-            for warn in phase1_result.warnings:
-                st.caption(f"- Warning: {warn}")
-        else:
-            st.error(f"Phase 1 validation: FAIL ({phase1_result.completeness:.0%} complete)")
-            for err in phase1_result.errors:
-                st.caption(f"- {err}")
-            for warn in phase1_result.warnings:
-                st.caption(f"- Warning: {warn}")
-
-    phase2_result = st.session_state.get("phase2_validation")
-    if phase2_result is not None:
-        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-        if phase2_result.passed:
-            retrieval_flag = "OK" if phase2_result.retrieval_precision_ok else "LOW"
-            st.success(f"Phase 2 validation: PASS (retrieval: {retrieval_flag})")
-            for warn in phase2_result.warnings:
-                st.caption(f"- Warning: {warn}")
-        else:
-            st.error("Phase 2 validation: FAIL")
-            for err in phase2_result.errors:
-                st.caption(f"- {err}")
-            for warn in phase2_result.warnings:
-                st.caption(f"- Warning: {warn}")
-
-    phase3_result = st.session_state.get("phase3_validation")
-    if phase3_result is not None:
-        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-        if phase3_result.passed:
-            st.success(
-                f"Phase 3 validation: PASS ({len(phase3_result.node_sequence)} nodes, "
-                f"{phase3_result.recommendation_count} recs)"
-            )
-            if not phase3_result.output_contract_ok:
-                st.caption("- Warning: output contract check failed.")
-            if not phase3_result.recommendation_contract_ok:
-                st.caption("- Warning: recommendation contract check failed.")
-            for warn in phase3_result.warnings:
-                st.caption(f"- Warning: {warn}")
-        else:
-            st.error("Phase 3 validation: FAIL")
-            for err in phase3_result.errors:
-                st.caption(f"- {err}")
-            for warn in phase3_result.warnings:
-                st.caption(f"- Warning: {warn}")
-
-    phase4_result = st.session_state.get("phase4_validation")
-    if phase4_result is not None:
-        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-        if phase4_result.passed:
-            st.success(
-                f"Phase 4 validation: PASS ({phase4_result.ranked_count} ranked, "
-                f"{phase4_result.filtered_out_count} filtered)"
-            )
-            if not phase4_result.ranking_stable:
-                st.caption("- Warning: ranking stability check failed.")
-            if not phase4_result.bounded_runtime_ok:
-                st.caption("- Warning: runtime budget exceeded.")
-            for warn in phase4_result.warnings:
-                st.caption(f"- Warning: {warn}")
-        else:
-            st.error("Phase 4 validation: FAIL")
-            for err in phase4_result.errors:
-                st.caption(f"- {err}")
-            for warn in phase4_result.warnings:
-                st.caption(f"- Warning: {warn}")
-
-    phase5_result = st.session_state.get("phase5_validation")
-    if phase5_result is not None:
-        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-        passed_gate_count = sum(1 for ok in phase5_result.gates.values() if ok)
-        total_gate_count = len(phase5_result.gates)
-
-        if phase5_result.passed and phase5_result.quality_gate_passed:
-            st.success(
-                f"Phase 5 validation: PASS ({passed_gate_count}/{total_gate_count} gates, quality gate passed)"
-            )
-        else:
-            st.error(
-                f"Phase 5 validation: FAIL ({passed_gate_count}/{total_gate_count} gates, quality gate failed)"
-            )
-
-        failed_scenarios = [name for name, ok in phase5_result.scenario_results.items() if not ok]
-        if failed_scenarios:
-            st.caption(f"- Failed scenarios: {', '.join(failed_scenarios)}")
-
-        for err in phase5_result.errors:
-            st.caption(f"- {err}")
-        for warn in phase5_result.warnings:
-            st.caption(f"- Warning: {warn}")
-
-    phase6_result = st.session_state.get("phase6_validation")
-    if phase6_result is not None:
-        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
-        if phase6_result.passed and phase6_result.handoff_ready:
-            st.success("Phase 6 validation: PASS (handoff ready)")
-        else:
-            st.error("Phase 6 validation: FAIL (handoff not ready)")
-
-        st.caption(f"- Docs complete: {phase6_result.docs_complete}")
-        st.caption(f"- Runbook complete: {phase6_result.runbook_complete}")
-        st.caption(f"- Governance configured: {phase6_result.governance_configured}")
-        st.caption(f"- KPI schema ready: {phase6_result.kpi_schema_ready}")
-
-        for err in phase6_result.errors:
-            st.caption(f"- {err}")
-        for warn in phase6_result.warnings:
-            st.caption(f"- Warning: {warn}")
 
     # ── Spacer + footer ──
-    st.markdown("<div style='flex:1;min-height:2rem;'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='flex:1;min-height:1rem;'></div>", unsafe_allow_html=True)
     st.markdown("""
-    <div style="text-align:center; opacity:0.28; font-size:0.72rem; padding:1.2rem 0 0.5rem 0;
+    <div style="text-align:center; opacity:0.28; font-size:0.72rem; padding:0.5rem 0 0 0;
                 border-top:1px solid rgba(255,255,255,0.06); margin:0 0.5rem;">
         &copy; 2026 Synora
     </div>
@@ -1258,6 +1386,189 @@ Predictions are made at **hourly granularity** across **275 traffic analysis zon
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# PAGE: AI Assistant
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+def page_ai_assistant():
+    section_header("AI Assistant", "Groq-powered assistant with local pipeline fallback")
+
+    if "assistant_provider_mode" not in st.session_state:
+        st.session_state["assistant_provider_mode"] = "Auto"
+    if "assistant_model_select" not in st.session_state:
+        st.session_state["assistant_model_select"] = "llama-3.3-70B-versatile"
+    if "assistant_model_custom" not in st.session_state:
+        st.session_state["assistant_model_custom"] = ""
+
+    model_options = [
+        "llama-3.3-70B-versatile",
+        "llama-3.1-8b-instant",
+        "openai/gpt-oss-120b",
+        "openai/gpt-oss-20b",
+        "custom",
+    ]
+
+    c_mode, c_model = st.columns([1, 1])
+    with c_mode:
+        provider_mode = st.selectbox(
+            "Provider",
+            ["Auto", "Local Pipeline", "Groq"],
+            key="assistant_provider_mode",
+        )
+
+    with c_model:
+        model_choice = st.selectbox("Groq Model", model_options, key="assistant_model_select")
+
+    selected_model = model_choice
+    if model_choice == "custom":
+        selected_model = st.text_input(
+            "Custom Groq Model",
+            value=st.session_state.get("assistant_model_custom", ""),
+            key="assistant_model_custom",
+            placeholder="e.g. llama-3.1-70b-versatile",
+        ).strip() or os.getenv("GROQ_MODEL", "llama-3.3-70B-versatile")
+
+    provider_hint = provider_mode
+    st.markdown(
+        f"""
+<div class="glass-card" style="border:1px solid rgba(108,99,255,0.22);">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:1rem;">
+        <div>
+            <div style="font-size:0.78rem;opacity:0.6;text-transform:uppercase;letter-spacing:0.08em;">Assistant Mode</div>
+            <div style="font-size:1.05rem;font-weight:700;">{provider_hint}</div>
+            <div style="font-size:0.78rem;opacity:0.65; margin-top:0.2rem;">Model: {selected_model}</div>
+        </div>
+    </div>
+</div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    if "assistant_chat" not in st.session_state:
+        st.session_state["assistant_chat"] = [
+            {
+                "role": "assistant",
+                "content": (
+                    "Ask me about charger placement, scheduling optimization, phase gate failures, "
+                    "or top recommendations from the local pipeline."
+                ),
+                "provider": provider_hint,
+            }
+        ]
+
+    for msg in st.session_state["assistant_chat"]:
+        with st.chat_message(msg["role"]):
+            st.markdown(msg["content"])
+            if msg.get("provider") and msg["role"] == "assistant":
+                st.caption(f"Provider: {msg['provider']}")
+
+    user_prompt = st.chat_input("Ask Synora AI Assistant...")
+    if user_prompt:
+        st.session_state["assistant_chat"].append({"role": "user", "content": user_prompt})
+        with st.chat_message("user"):
+            st.markdown(user_prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Thinking..."):
+                reply, provider, _diag = groq_or_local_reply(
+                    user_prompt,
+                    st.session_state["assistant_chat"],
+                    provider_mode=provider_mode,
+                    selected_model=selected_model,
+                )
+            st.markdown(reply)
+            st.caption(f"Provider: {provider}")
+
+        st.session_state["assistant_chat"].append(
+            {"role": "assistant", "content": reply, "provider": provider}
+        )
+
+
+def page_debug_menu():
+    section_header("Debug Menu", "Complete diagnostics for pipeline, RAG, and API routing")
+
+    p0 = st.session_state.get("phase0_preflight")
+    p1 = st.session_state.get("phase1_validation")
+    p2 = st.session_state.get("phase2_validation")
+    p3 = st.session_state.get("phase3_validation")
+    p4 = st.session_state.get("phase4_validation")
+    p5 = st.session_state.get("phase5_validation")
+    p6 = st.session_state.get("phase6_validation")
+
+    summary = pd.DataFrame(
+        [
+            {"phase": "Phase 0", "status": "PASS" if getattr(p0, "passed", False) else "FAIL"},
+            {"phase": "Phase 1", "status": "PASS" if getattr(p1, "passed", False) else "FAIL"},
+            {"phase": "Phase 2", "status": "PASS" if getattr(p2, "passed", False) else "FAIL"},
+            {"phase": "Phase 3", "status": "PASS" if getattr(p3, "passed", False) else "FAIL"},
+            {"phase": "Phase 4", "status": "PASS" if getattr(p4, "passed", False) else "FAIL"},
+            {"phase": "Phase 5", "status": "PASS" if getattr(p5, "quality_gate_passed", False) else "FAIL"},
+            {"phase": "Phase 6", "status": "PASS" if getattr(p6, "handoff_ready", False) else "FAIL"},
+        ]
+    )
+
+    st.markdown("#### Pipeline Health")
+    st.dataframe(summary, hide_index=True, width="stretch")
+
+    st.markdown("#### Error and Warning Details")
+    for name, result in [
+        ("Phase 0", p0),
+        ("Phase 1", p1),
+        ("Phase 2", p2),
+        ("Phase 3", p3),
+        ("Phase 4", p4),
+        ("Phase 5", p5),
+        ("Phase 6", p6),
+    ]:
+        with st.expander(name, expanded=False):
+            errors = list(getattr(result, "errors", [])) if result is not None else []
+            warnings = list(getattr(result, "warnings", [])) if result is not None else []
+            if errors:
+                st.markdown("**Errors**")
+                for e in errors:
+                    st.caption(f"- {e}")
+            else:
+                st.caption("- No errors")
+
+            if warnings:
+                st.markdown("**Warnings**")
+                for w in warnings:
+                    st.caption(f"- {w}")
+            else:
+                st.caption("- No warnings")
+
+    st.markdown("#### API and Assistant Diagnostics")
+    diag = st.session_state.get("assistant_last_diag", {})
+    if diag:
+        st.json(diag)
+    else:
+        st.caption("No assistant request has been sent yet in this session.")
+
+    st.markdown("#### RAG Retrieval Test")
+    test_query = st.text_input("RAG Query", value="high-load zone scheduling and reliability margin")
+    if st.button("Run RAG Test", key="run_rag_test"):
+        rag_docs = retrieve_rag_context(test_query, st.session_state.get("agent_state", {}))
+        if rag_docs:
+            st.dataframe(pd.DataFrame(rag_docs), width="stretch", hide_index=True)
+        else:
+            st.warning("No RAG documents returned for this query.")
+
+    st.markdown("#### Pipeline State Snapshot")
+    state = st.session_state.get("agent_state", {})
+    c1, c2 = st.columns(2)
+    with c1:
+        st.metric("Ranked Recommendations", len(state.get("ranked_recommendations", [])))
+    with c2:
+        st.metric("Confidence Notes", len(state.get("confidence_notes", [])))
+
+    with st.expander("Top Recommendations (State)", expanded=False):
+        recs = state.get("ranked_recommendations", [])[:10]
+        if recs:
+            st.dataframe(pd.DataFrame(recs), width="stretch", hide_index=True)
+        else:
+            st.caption("No recommendations available.")
+
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # ROUTER
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -1267,5 +1578,7 @@ Predictions are made at **hourly granularity** across **275 traffic analysis zon
     "Predictions Explorer": page_predictions,
     "Feature Importance": page_feature_importance,
     "Zone Analysis": page_zone_analysis,
+    "AI Assistant": page_ai_assistant,
+    "Debug Menu": page_debug_menu,
     "About": page_about,
 }[page]()

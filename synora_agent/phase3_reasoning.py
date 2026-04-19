@@ -5,12 +5,56 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Mapping, MutableMapping, Tuple
+import pandas as pd
 
 from .phase0_contracts import validate_output_payload, validate_recommendations
 from .phase1_state import append_audit_entry, validate_node_transition
 from .phase2_foundation import build_evidence_payload, build_guideline_corpus, retrieve_guidelines
 
 PHASE3_VERSION = 1
+
+
+def _infer_high_load_zone_ids(state: Mapping[str, Any], project_root: Path, max_zones: int = 3) -> List[Any]:
+    """Infer top high-load zone IDs from available predictions data."""
+    assets = state.get("data_assets", {})
+    pred_rel = str(assets.get("predictions", "results/predictions/test_predictions.csv"))
+    pred_path = project_root / pred_rel
+
+    if not pred_path.exists():
+        return []
+
+    try:
+        df = pd.read_csv(pred_path)
+    except Exception:
+        return []
+
+    if "zone_id" not in df.columns:
+        return []
+
+    metric_col = None
+    for candidate in [
+        "actual_occupancy",
+        "occupancy",
+        "LightGBM_occ_pred",
+        "RandomForest_occ_pred",
+        "XGBoost_occ_pred",
+        "actual_volume",
+        "volume",
+        "LightGBM_vol_pred",
+    ]:
+        if candidate in df.columns:
+            metric_col = candidate
+            break
+
+    if metric_col is None:
+        return []
+
+    grouped = df.groupby("zone_id")[metric_col].mean(numeric_only=True).sort_values(ascending=False)
+    if grouped.empty:
+        return []
+
+    top = grouped.head(max_zones)
+    return list(top.index)
 
 
 def apply_phase3_defaults(state: MutableMapping[str, Any] | None) -> Dict[str, Any]:
@@ -38,11 +82,12 @@ class Phase3ExecutionResult:
         return asdict(self)
 
 
-def _demand_analyzer_node(state: Mapping[str, Any]) -> Dict[str, Any]:
+def _demand_analyzer_node(state: Mapping[str, Any], project_root: Path) -> Dict[str, Any]:
     out = dict(state)
     demand = dict(out.get("demand_features", {}))
     scope = out.get("scope", {})
     zone_ids = scope.get("zone_ids") or []
+    inferred_zone_ids = _infer_high_load_zone_ids(out, project_root, max_zones=3)
 
     demand["stress_summary"] = {
         "zones_considered": len(zone_ids),
@@ -50,9 +95,14 @@ def _demand_analyzer_node(state: Mapping[str, Any]) -> Dict[str, Any]:
         "volatility_band": "moderate",
     }
     demand["peak_pressure_index"] = 0.62 if zone_ids else 0.48
+    demand["high_load_zone_ids"] = inferred_zone_ids
 
     out["demand_features"] = demand
-    out = append_audit_entry(out, "demand_analyzer", "derived stress_summary and peak_pressure_index")
+    out = append_audit_entry(
+        out,
+        "demand_analyzer",
+        f"derived stress summary and inferred {len(inferred_zone_ids)} high-load zones",
+    )
     return out
 
 
@@ -93,7 +143,9 @@ def _placement_optimizer_node(state: Mapping[str, Any]) -> Dict[str, Any]:
     out = dict(state)
     actions = list(out.get("candidate_actions", []))
     scope = out.get("scope", {})
-    zone_ids = scope.get("zone_ids") or ["citywide"]
+    scoped_zone_ids = scope.get("zone_ids") or []
+    inferred_zone_ids = out.get("demand_features", {}).get("high_load_zone_ids", [])
+    zone_ids = scoped_zone_ids or inferred_zone_ids or ["citywide"]
 
     for zid in zone_ids[:3]:
         actions.append(
@@ -110,7 +162,11 @@ def _placement_optimizer_node(state: Mapping[str, Any]) -> Dict[str, Any]:
         )
 
     out["candidate_actions"] = actions
-    out = append_audit_entry(out, "placement_optimizer", f"generated {len(zone_ids[:3])} placement actions")
+    out = append_audit_entry(
+        out,
+        "placement_optimizer",
+        f"generated {len(zone_ids[:3])} placement actions using zone IDs: {zone_ids[:3]}",
+    )
     return out
 
 
@@ -220,7 +276,7 @@ def run_phase3_pipeline(state: Mapping[str, Any] | None, project_root: Path) -> 
     node_sequence: List[str] = []
 
     steps = [
-        ("demand_analyzer", lambda s: _demand_analyzer_node(s)),
+        ("demand_analyzer", lambda s: _demand_analyzer_node(s, project_root)),
         ("guideline_retriever", lambda s: _guideline_retriever_node(s)),
         ("infra_gap_analyzer", lambda s: _infra_gap_analyzer_node(s, project_root)),
         ("placement_optimizer", lambda s: _placement_optimizer_node(s)),
