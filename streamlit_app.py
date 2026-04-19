@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 from pathlib import Path
 import joblib
 from synora_agent.phase0_contracts import apply_phase0_defaults, run_phase0_preflight
+from synora_agent.phase1_state import apply_phase1_defaults, run_phase1_validation
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -58,10 +59,13 @@ MODEL_FILE_KEYS = {"RandomForest": "randomforest", "XGBoost": "xgboost", "LightG
 
 
 def init_phase0_state() -> None:
-    """Initialize and validate Phase 0 contracts in session state."""
+    """Initialize and validate Phase 0 and Phase 1 contracts in session state."""
     current = st.session_state.get("agent_state", {})
-    st.session_state["agent_state"] = apply_phase0_defaults(current)
+    state = apply_phase0_defaults(current)
+    state = apply_phase1_defaults(state)
+    st.session_state["agent_state"] = state
     st.session_state["phase0_preflight"] = run_phase0_preflight(st.session_state["agent_state"])
+    st.session_state["phase1_validation"] = run_phase1_validation(st.session_state["agent_state"])
 
 
 init_phase0_state()
@@ -447,6 +451,20 @@ with st.sidebar:
             for warn in phase0_result.warnings:
                 st.caption(f"- Warning: {warn}")
 
+    phase1_result = st.session_state.get("phase1_validation")
+    if phase1_result is not None:
+        st.markdown("<div style='height:0.35rem'></div>", unsafe_allow_html=True)
+        if phase1_result.passed:
+            st.success(f"Phase 1 validation: PASS ({phase1_result.completeness:.0%} complete)")
+            for warn in phase1_result.warnings:
+                st.caption(f"- Warning: {warn}")
+        else:
+            st.error(f"Phase 1 validation: FAIL ({phase1_result.completeness:.0%} complete)")
+            for err in phase1_result.errors:
+                st.caption(f"- {err}")
+            for warn in phase1_result.warnings:
+                st.caption(f"- Warning: {warn}")
+
     # ── Spacer + footer ──
     st.markdown("<div style='flex:1;min-height:2rem;'></div>", unsafe_allow_html=True)
     st.markdown("""
@@ -501,7 +519,7 @@ def page_overview():
             ))
         styled_fig(fig, f"R² Score — {target_label}", height=380)
         fig.update_yaxes(range=[0, 1.1], title_text="R²")
-        st.plotly_chart(fig, key="ov_r2", use_container_width=True)
+        st.plotly_chart(fig, key="ov_r2", width="stretch")
 
     with col_r:
         fig = go.Figure()
@@ -515,7 +533,7 @@ def page_overview():
             ))
         styled_fig(fig, f"Mean Absolute Error — {target_label}", height=380)
         fig.update_yaxes(title_text="MAE")
-        st.plotly_chart(fig, key="ov_mae", use_container_width=True)
+        st.plotly_chart(fig, key="ov_mae", width="stretch")
 
     # ── Metrics table ──
     st.markdown(f"#### {target_label} Model Metrics")
@@ -525,7 +543,7 @@ def page_overview():
                  "MAPE (%)": "{:.2f}"})
         .background_gradient(subset=["R²"], cmap="Purples")
         .background_gradient(subset=["MAE"], cmap="Reds_r"),
-        use_container_width=True, hide_index=True,
+        width="stretch", hide_index=True,
     )
 
     st.divider()
@@ -547,7 +565,7 @@ def page_overview():
     styled_fig(fig, f"Average Hourly {target_label} (All Zones)", height=370)
     fig.update_xaxes(title_text="Hour of Day", dtick=2)
     fig.update_yaxes(title_text=target_label)
-    st.plotly_chart(fig, key="ov_hourly", use_container_width=True)
+    st.plotly_chart(fig, key="ov_hourly", width="stretch")
 
     # ── All models hourly overlay ──
     st.markdown(f"#### Model Predictions vs Actual (Hourly Mean)")
@@ -575,7 +593,7 @@ def page_overview():
     styled_fig(fig, f"All Models vs Actual — Hourly {target_label}", height=400)
     fig.update_xaxes(title_text="Hour of Day", dtick=2)
     fig.update_yaxes(title_text=target_label)
-    st.plotly_chart(fig, key="ov_models", use_container_width=True)
+    st.plotly_chart(fig, key="ov_models", width="stretch")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -632,7 +650,7 @@ def page_model_comparison():
                     showlegend=False,
                 ))
             styled_fig(fig, metric_name, height=320)
-            st.plotly_chart(fig, key=f"mc_{metric_name}", use_container_width=True)
+            st.plotly_chart(fig, key=f"mc_{metric_name}", width="stretch")
 
     st.divider()
 
@@ -653,7 +671,7 @@ def page_model_comparison():
         radialaxis=dict(gridcolor="rgba(255,255,255,0.06)", showticklabels=False),
         angularaxis=dict(gridcolor="rgba(255,255,255,0.06)"),
     ))
-    st.plotly_chart(fig, key="mc_radar", use_container_width=True)
+    st.plotly_chart(fig, key="mc_radar", width="stretch")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -730,7 +748,7 @@ def page_predictions():
         styled_fig(fig, f"Actual vs {model} — {target_label}{ts_note}", height=440)
         fig.update_xaxes(title_text="Time")
         fig.update_yaxes(title_text=target_label)
-        st.plotly_chart(fig, key="pe_ts", use_container_width=True)
+        st.plotly_chart(fig, key="pe_ts", width="stretch")
 
         # Hourly error bars
         if sel_zone == "All Zones":
@@ -749,7 +767,7 @@ def page_predictions():
             styled_fig(fig, f"MAE by Hour — {model}", height=300)
             fig.update_xaxes(title_text="Hour", dtick=2)
             fig.update_yaxes(title_text="MAE")
-            st.plotly_chart(fig, key="pe_hourly_err", use_container_width=True)
+            st.plotly_chart(fig, key="pe_hourly_err", width="stretch")
 
     with t2:
         ssc = df if len(df) <= 10000 else df.sample(10000, random_state=42)
@@ -769,7 +787,7 @@ def page_predictions():
         styled_fig(fig, f"Actual vs Predicted — {model}", height=480)
         fig.update_xaxes(title_text=f"Actual {target_label}")
         fig.update_yaxes(title_text=f"Predicted {target_label}")
-        st.plotly_chart(fig, key="pe_sc", use_container_width=True)
+        st.plotly_chart(fig, key="pe_sc", width="stretch")
 
     with t3:
         ca, cb = st.columns(2)
@@ -782,7 +800,7 @@ def page_predictions():
             styled_fig(fig, "Prediction Error Distribution", height=380)
             fig.update_xaxes(title_text="Error (Actual − Predicted)")
             fig.update_yaxes(title_text="Frequency")
-            st.plotly_chart(fig, key="pe_hist", use_container_width=True)
+            st.plotly_chart(fig, key="pe_hist", width="stretch")
 
         with cb:
             # Convert hex color to rgba for Violin fillcolor
@@ -794,7 +812,7 @@ def page_predictions():
             ))
             styled_fig(fig, "Absolute Error Distribution", height=380)
             fig.update_yaxes(title_text="|Error|")
-            st.plotly_chart(fig, key="pe_violin", use_container_width=True)
+            st.plotly_chart(fig, key="pe_violin", width="stretch")
 
         # Residual plot
         st.markdown("##### Residual Plot")
@@ -808,13 +826,13 @@ def page_predictions():
         styled_fig(fig, f"Residuals vs Predicted — {model}", height=360)
         fig.update_xaxes(title_text=f"Predicted {target_label}")
         fig.update_yaxes(title_text="Residual")
-        st.plotly_chart(fig, key="pe_resid", use_container_width=True)
+        st.plotly_chart(fig, key="pe_resid", width="stretch")
 
     with t4:
         show = df[["time", "zone_id", actual_col, pred_col]].copy()
         show["error"] = show[actual_col] - show[pred_col]
         show.columns = ["Time", "Zone", "Actual", "Predicted", "Error"]
-        st.dataframe(show.head(500), use_container_width=True, hide_index=True)
+        st.dataframe(show.head(500), width="stretch", hide_index=True)
         st.caption(f"Showing 500 of {len(show):,} rows")
 
 
@@ -862,7 +880,7 @@ def page_feature_importance():
     ))
     styled_fig(fig, f"Top {top_n} Features — {mn}", height=max(400, top_n * 30))
     fig.update_xaxes(title_text="Importance Score")
-    st.plotly_chart(fig, key="fi_bar", use_container_width=True)
+    st.plotly_chart(fig, key="fi_bar", width="stretch")
 
     st.divider()
 
@@ -895,7 +913,7 @@ def page_feature_importance():
     fig.update_layout(barmode="group")
     fig.update_xaxes(tickangle=-30, title_text="Feature")
     fig.update_yaxes(title_text="Relative Importance (%)")
-    st.plotly_chart(fig, key="fi_cross", use_container_width=True)
+    st.plotly_chart(fig, key="fi_cross", width="stretch")
 
     # ── Full table ──
     with st.expander(f"Full {mn} Feature Importance Table"):
@@ -903,7 +921,7 @@ def page_feature_importance():
         st.dataframe(
             full.style.format({"importance": "{:,.0f}"})
                 .bar(subset=["importance"], color=clr + "33"),
-            use_container_width=True, hide_index=True,
+            width="stretch", hide_index=True,
         )
 
 
@@ -967,7 +985,7 @@ def page_zone_analysis():
                         bgcolor="rgba(0,0,0,0)",
                     ),
                 )
-                st.plotly_chart(fig, key="za_map", use_container_width=True)
+                st.plotly_chart(fig, key="za_map", width="stretch")
         else:
             st.info("Location data unavailable.")
 
@@ -980,7 +998,7 @@ def page_zone_analysis():
             ))
             styled_fig(fig, "MAE Distribution Across Zones", height=380)
             fig.update_xaxes(title_text="Zone MAE")
-            st.plotly_chart(fig, key="za_hist1", use_container_width=True)
+            st.plotly_chart(fig, key="za_hist1", width="stretch")
 
         with cb:
             fig = go.Figure(go.Histogram(
@@ -989,7 +1007,7 @@ def page_zone_analysis():
             ))
             styled_fig(fig, f"Mean {target_label} by Zone", height=380)
             fig.update_xaxes(title_text=f"Mean {target_label}")
-            st.plotly_chart(fig, key="za_hist2", use_container_width=True)
+            st.plotly_chart(fig, key="za_hist2", width="stretch")
 
         # Demand vs Error scatter
         fig = go.Figure(go.Scatter(
@@ -1002,7 +1020,7 @@ def page_zone_analysis():
         styled_fig(fig, f"Demand vs Error — {model}", height=400)
         fig.update_xaxes(title_text=f"Mean {target_label}")
         fig.update_yaxes(title_text="MAE")
-        st.plotly_chart(fig, key="za_scatter", use_container_width=True)
+        st.plotly_chart(fig, key="za_scatter", width="stretch")
 
     with t_rank:
         cb_col, cw_col = st.columns(2)
@@ -1011,13 +1029,13 @@ def page_zone_analysis():
             b = zs.nsmallest(10, "mae")[["zone_id", "mae", "mean_actual", "samples"]]
             b.columns = ["Zone", "MAE", f"Mean {target_label}", "Samples"]
             st.dataframe(b.style.format({"MAE": "{:.4f}", f"Mean {target_label}": "{:.2f}"}),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
         with cw_col:
             st.markdown("#### Worst Zones")
             w = zs.nlargest(10, "mae")[["zone_id", "mae", "mean_actual", "samples"]]
             w.columns = ["Zone", "MAE", f"Mean {target_label}", "Samples"]
             st.dataframe(w.style.format({"MAE": "{:.4f}", f"Mean {target_label}": "{:.2f}"}),
-                         use_container_width=True, hide_index=True)
+                         width="stretch", hide_index=True)
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
