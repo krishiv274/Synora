@@ -15,18 +15,18 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from pathlib import Path
 import joblib
-from synora_agent.phase0_contracts import apply_phase0_defaults, run_phase0_preflight
-from synora_agent.phase1_state import apply_phase1_defaults, run_phase1_validation
-from synora_agent.phase2_foundation import (
+from debug.synora_agent.phase0_contracts import apply_phase0_defaults, run_phase0_preflight
+from debug.synora_agent.phase1_state import apply_phase1_defaults, run_phase1_validation
+from debug.synora_agent.phase2_foundation import (
     apply_phase2_defaults,
     build_guideline_corpus,
     retrieve_guidelines,
     run_phase2_validation,
 )
-from synora_agent.phase3_reasoning import apply_phase3_defaults, run_phase3_pipeline
-from synora_agent.phase4_ranking import apply_phase4_defaults, run_phase4_pipeline
-from synora_agent.phase5_validation import apply_phase5_defaults, run_phase5_validation
-from synora_agent.phase6_operations import apply_phase6_defaults, run_phase6_operations
+from debug.synora_agent.phase3_reasoning import apply_phase3_defaults, run_phase3_pipeline
+from debug.synora_agent.phase4_ranking import apply_phase4_defaults, run_phase4_pipeline
+from debug.synora_agent.phase5_validation import apply_phase5_defaults, run_phase5_validation
+from debug.synora_agent.phase6_operations import apply_phase6_defaults, run_phase6_operations
 import warnings
 warnings.filterwarnings("ignore", category=UserWarning)
 
