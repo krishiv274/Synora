@@ -43,11 +43,11 @@ PATHS = {
 SPLIT_DATE = pd.Timestamp("2023-02-01")
 
 FEATURE_COLS = [
-    'longitude', 'latitude', 'area', 'perimeter',
+    'longitude', 'latitude', 'charge_count', 'area', 'perimeter',
     'num_stations', 'total_piles', 'mean_station_lat', 'mean_station_lon',
     'hour', 'day_of_week', 'month', 'day_of_month', 'is_weekend',
     'hour_sin', 'hour_cos', 'dow_sin', 'dow_cos',
-    'total_price',
+    'charge_density', 'total_price',
     'occ_lag_1h', 'occ_lag_3h', 'occ_lag_6h', 'occ_lag_12h',
     'occ_lag_24h', 'occ_lag_168h', 'vol_lag_24h',
     'occ_rmean_6h', 'occ_rmean_12h', 'occ_rmean_24h',
@@ -138,13 +138,13 @@ section[data-testid="stSidebar"] {
     background: linear-gradient(165deg, #0a0a1a 0%, #0f0f28 35%, #161035 70%, #1a1040 100%);
     border-right: 1px solid rgba(108,99,255,0.12);
     overflow-x: hidden !important;
-    overflow-y: hidden !important;
+    overflow-y: auto !important;
     max-height: 100vh;
     box-shadow: 4px 0 30px rgba(0,0,0,0.3);
 }
 section[data-testid="stSidebar"] > div:first-child {
     overflow-x: hidden !important;
-    overflow-y: hidden !important;
+    overflow-y: auto !important;
     display: flex; flex-direction: column; min-height: 100vh;
 }
 section[data-testid="stSidebar"] p, section[data-testid="stSidebar"] span,
@@ -297,14 +297,30 @@ def load_predictions():
     """Generate predictions from pkl models on the test set."""
     test = load_test_data()
     models = load_models()
-    X_test = test[FEATURE_COLS]
 
     for mn in MODEL_COLORS:
         for tgt in ["occupancy", "volume"]:
             model = models.get(mn, {}).get(tgt)
             pred_col = PRED_COLS[mn][tgt]
             if model is not None:
-                test[pred_col] = model.predict(X_test)
+                if hasattr(model, "feature_names_in_"):
+                    model_features = [str(c) for c in model.feature_names_in_]
+                elif hasattr(model, "feature_name_"):
+                    model_features = [str(c) for c in model.feature_name_]
+                else:
+                    model_features = FEATURE_COLS
+
+                missing = [c for c in model_features if c not in test.columns]
+                if missing:
+                    test[pred_col] = np.nan
+                    continue
+
+                X_model = test[model_features]
+                valid_mask = X_model.notna().all(axis=1)
+                pred_series = pd.Series(np.nan, index=test.index)
+                if valid_mask.any():
+                    pred_series.loc[valid_mask] = model.predict(X_model.loc[valid_mask])
+                test[pred_col] = pred_series
             else:
                 test[pred_col] = np.nan
 
@@ -690,13 +706,13 @@ with st.sidebar:
     target = st.radio(
         "Target",
         ["occupancy", "volume"],
-        format_func=lambda t: "👥 Occupancy" if t == "occupancy" else "⚡ Volume",
+        format_func=lambda t: "Occupancy" if t == "occupancy" else "Volume",
         horizontal=True,
         label_visibility="collapsed",
         key="global_target",
     )
     target_label = "Occupancy" if target == "occupancy" else "Volume"
-    target_badge = "👥 Occupancy" if target == "occupancy" else "⚡ Volume"
+    target_badge = "Occupancy" if target == "occupancy" else "Volume"
 
     st.markdown("</div>", unsafe_allow_html=True)   # close glass card
 
@@ -709,13 +725,13 @@ with st.sidebar:
     """, unsafe_allow_html=True)
 
     NAV_PAGES = [
-        "🤖 Agentic Planner",
-        "📊 Overview",
-        "📈 Model Comparison",
-        "🔍 Predictions Explorer",
-        "🎯 Feature Importance",
-        "🗺️ Zone Analysis",
-        "ℹ️ About",
+        "Agentic Planner",
+        "Overview",
+        "Model Comparison",
+        "Predictions Explorer",
+        "Feature Importance",
+        "Zone Analysis",
+        "About",
     ]
     page = st.radio(
         "Nav",
@@ -1476,14 +1492,14 @@ def page_agentic_planner():
     """, unsafe_allow_html=True)
 
     section_header(
-        "🤖 Agentic Planner",
+        "Agentic Planner",
         "LangGraph · ChromaDB RAG · Groq Llama 3.3 — AI-powered EV infrastructure planning",
     )
 
     # ── Sidebar API key config ──
     with st.sidebar:
         st.markdown("<div style='height:0.5rem'></div>", unsafe_allow_html=True)
-        with st.expander("🔑 API Keys", expanded=False):
+        with st.expander("API Keys", expanded=False):
             groq_key = st.text_input(
                 "Groq API Key (free)",
                 value=os.getenv("GROQ_API_KEY", ""),
@@ -1548,7 +1564,7 @@ def page_agentic_planner():
         )
     with col_b:
         run_btn = st.button(
-            "▶ Run Agent",
+            "Run Agent",
             type="primary",
             disabled=st.session_state.ap_running,
             use_container_width=True,
@@ -1598,7 +1614,7 @@ def page_agentic_planner():
         trace_container = st.container()
         trace_placeholder = trace_container.empty()
 
-        with st.spinner("🤖 Agent is thinking …"):
+        with st.spinner("Running agent analysis..."):
             try:
                 # Import here to avoid top-level import errors if deps missing
                 from agent.graph import run_agent_streaming
@@ -1607,12 +1623,12 @@ def page_agentic_planner():
                 final_state = {}
 
                 NODE_ICONS = {
-                    "demand_forecaster": "🔮",
-                    "anomaly_detector":  "🚨",
-                    "rag_retriever":     "📚",
-                    "planning_agent":    "🤖",
-                    "report_generator":  "📄",
-                    "human_review_gate": "🔍",
+                    "demand_forecaster": "[DF]",
+                    "anomaly_detector":  "[AN]",
+                    "rag_retriever":     "[RAG]",
+                    "planning_agent":    "[PLAN]",
+                    "report_generator":  "[RPT]",
+                    "human_review_gate": "[REVIEW]",
                 }
 
                 for node_name, node_output in run_agent_streaming(
@@ -1620,7 +1636,7 @@ def page_agentic_planner():
                     approved=st.session_state.ap_approved,
                 ):
                     final_state.update(node_output)
-                    icon = NODE_ICONS.get(node_name, "⚙️")
+                    icon = NODE_ICONS.get(node_name, "[STEP]")
                     step_msg = f"{icon} <b>{node_name.replace('_', ' ').title()}</b> — completed"
                     live_trace.append(step_msg)
 
@@ -1638,7 +1654,7 @@ def page_agentic_planner():
 
             except ImportError as ie:
                 st.error(
-                    f"⚠️ Agent dependencies not installed: {ie}\n\n"
+                    f"Agent dependencies not installed: {ie}\n\n"
                     "Run: `pip install langgraph langchain langchain-anthropic "
                     "langchain-openai chromadb sentence-transformers anthropic`"
                 )
@@ -1655,7 +1671,7 @@ def page_agentic_planner():
         result = st.session_state.ap_result
 
         # ── Agent trace ──
-        st.markdown("#### 🧭 Agent Step Trace")
+        st.markdown("#### Agent Step Trace")
         if st.session_state.ap_trace:
             html_steps = "".join(
                 f'<div class="agent-step done">{s}</div>'
@@ -1702,7 +1718,7 @@ def page_agentic_planner():
         st.divider()
 
         # ── Structured outputs (course rubric: demand summary, high-load IDs, scheduling) ──
-        with st.expander("📋 Structured planning outputs (demand summary · high-load zones · scheduling)", expanded=False):
+        with st.expander("Structured planning outputs (demand summary · high-load zones · scheduling)", expanded=False):
             c1, c2 = st.columns(2)
             with c1:
                 st.markdown("**Charging demand summary**")
@@ -1720,7 +1736,7 @@ def page_agentic_planner():
         st.divider()
 
         # ── Demand heatmap ──
-        st.markdown("#### 📊 Predicted Demand by Zone")
+        st.markdown("#### Predicted Demand by Zone")
         if predictions:
             hm_data = pd.DataFrame([
                 {
@@ -1792,7 +1808,7 @@ def page_agentic_planner():
         st.divider()
 
         # ── Anomaly alerts ──
-        st.markdown("#### 🚨 Anomaly Alerts")
+        st.markdown("#### Anomaly Alerts")
         if anomalies:
             for a in sorted(anomalies, key=lambda x: x.get("occupancy", 0), reverse=True):
                 sev = a.get("severity", "medium")
@@ -1812,12 +1828,12 @@ def page_agentic_planner():
                     unsafe_allow_html=True,
                 )
         else:
-            st.success("✅ No anomalous zones detected at current thresholds.")
+            st.success("No anomalous zones detected at current thresholds.")
 
         st.divider()
 
         # ── RAG sources ──
-        with st.expander(f"📚 RAG Knowledge Base Sources ({len(rag_sources)} documents retrieved)"):
+        with st.expander(f"RAG Knowledge Base Sources ({len(rag_sources)} documents retrieved)"):
             rag_context = result.get("rag_context", [])
             for i, (src, ctx) in enumerate(zip(rag_sources, rag_context)):
                 st.markdown(
@@ -1839,7 +1855,7 @@ def page_agentic_planner():
                 """
                 <div class="review-gate">
                     <div style="font-size:1.1rem;font-weight:800;color:#FFC107;margin-bottom:0.5rem;">
-                        ⚠️ Human Approval Required
+                        Human Approval Required
                     </div>
                     <div style="font-size:0.9rem;opacity:0.85;">
                         This recommendation triggered the human review gate because:<br>
@@ -1855,7 +1871,7 @@ def page_agentic_planner():
             ap_col1, ap_col2 = st.columns(2)
             with ap_col1:
                 if st.button(
-                    "✅ Approve & Finalise Report",
+                    "Approve and Finalise Report",
                     type="primary",
                     key="ap_approve_btn",
                     use_container_width=True,
@@ -1867,7 +1883,7 @@ def page_agentic_planner():
                     st.rerun()
             with ap_col2:
                 if st.button(
-                    "❌ Reject Recommendation",
+                    "Reject Recommendation",
                     type="secondary",
                     key="ap_reject_btn",
                     use_container_width=True,
@@ -1878,10 +1894,10 @@ def page_agentic_planner():
                     st.warning("Recommendation rejected. Please refine your query and try again.")
                     st.rerun()
         elif needs_review and st.session_state.ap_approved:
-            st.success("✅ Recommendation approved by human reviewer.")
+            st.success("Recommendation approved by human reviewer.")
 
         # ── Final recommendation ──
-        st.markdown("#### 🏗️ Infrastructure Recommendation")
+        st.markdown("#### Infrastructure Recommendation")
         if recommendation:
             st.markdown(
                 f'<div class="rec-box">{recommendation.replace(chr(10), "<br>") if "<br>" not in recommendation else recommendation}</div>',
@@ -1893,12 +1909,12 @@ def page_agentic_planner():
         st.divider()
 
         # ── Download buttons ──
-        st.markdown("#### 💾 Export Report")
+        st.markdown("#### Export Report")
         dl1, dl2 = st.columns(2)
         with dl1:
             report_json = json.dumps(report, indent=2, default=str)
             st.download_button(
-                label="⬇️ Download JSON Report",
+                label="Download JSON Report",
                 data=report_json,
                 file_name=f"synora_report_{report.get('report_id', 'export')}.json",
                 mime="application/json",
@@ -1955,7 +1971,7 @@ def page_agentic_planner():
 
             md_report = "\n".join(md_lines)
             st.download_button(
-                label="⬇️ Download Markdown Report",
+                label="Download Markdown Report",
                 data=md_report,
                 file_name=f"synora_report_{report.get('report_id', 'export')}.md",
                 mime="text/markdown",
@@ -1967,10 +1983,9 @@ def page_agentic_planner():
         # ── Empty state ──
         st.markdown("""
         <div style="text-align:center; padding:4rem 2rem; opacity:0.45;">
-            <div style="font-size:3.5rem; margin-bottom:1rem;">🤖</div>
             <div style="font-size:1.2rem; font-weight:700; margin-bottom:0.5rem;">Agentic Planner Ready</div>
             <div style="font-size:0.9rem;">
-                Enter a planning query above and click <b>▶ Run Agent</b> to start.<br>
+                Enter a planning query above and click <b>Run Agent</b> to start.<br>
                 The agent will analyse zone demand, detect anomalies, retrieve knowledge,<br>
                 and generate an AI-powered infrastructure recommendation.
             </div>
@@ -1983,11 +1998,11 @@ def page_agentic_planner():
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 {
-    "🤖 Agentic Planner": page_agentic_planner,
-    "📊 Overview": page_overview,
-    "📈 Model Comparison": page_model_comparison,
-    "🔍 Predictions Explorer": page_predictions,
-    "🎯 Feature Importance": page_feature_importance,
-    "🗺️ Zone Analysis": page_zone_analysis,
-    "ℹ️ About": page_about,
+    "Agentic Planner": page_agentic_planner,
+    "Overview": page_overview,
+    "Model Comparison": page_model_comparison,
+    "Predictions Explorer": page_predictions,
+    "Feature Importance": page_feature_importance,
+    "Zone Analysis": page_zone_analysis,
+    "About": page_about,
 }[page]()
