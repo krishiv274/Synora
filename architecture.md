@@ -11,16 +11,16 @@
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        SYNORA SYSTEM                                    │
 │                                                                         │
-│   ┌──────────┐    ┌──────────────┐    ┌──────────────┐                  │
-│   │ Raw Data │───▶│  ML Pipeline │───▶│  Streamlit   │                  │
-│   │ UrbanEV  │    │  (Training)  │    │  Dashboard   │                  │
-│   └──────────┘    └──────────────┘    └──────┬───────┘                  │
+│   ┌──────────┐    ┌──────────────┐    ┌──────────────┐                 │
+│   │ Raw Data │───▶│  ML Pipeline │───▶│  Streamlit   │                 │
+│   │ UrbanEV  │    │  (Training)  │    │  Dashboard   │                 │
+│   └──────────┘    └──────────────┘    └──────┬───────┘                 │
 │                                              │                          │
 │                                              ▼                          │
-│                                   ┌──────────────────┐                  │
-│                                   │  Agentic Planner │                  │
-│                                   │  (LangGraph+RAG) │                  │
-│                                   └──────────────────┘                  │
+│                                   ┌──────────────────┐                 │
+│                                   │  Agentic Planner │                 │
+│                                   │  (LangGraph+RAG) │                 │
+│                                   └──────────────────┘                 │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -50,7 +50,7 @@
                                        ┌─────────────────────────────┐
                                        │ Temporal: hour, dow, month  │
                                        │ Cyclical: sin/cos encoding  │
-                                       │ Lag: 1h, 3h, 6h, 12h,       │
+                                       │ Lag: 1h, 3h, 6h, 12h,      │
                                        │       24h                   │
                                        │ Rolling: mean/std 6h–12h    │
                                        │ Spatial: charge_density     │
@@ -143,79 +143,79 @@
   │              SYNORA LANGGRAPH AGENT                 │
   │                                                     │
   │  SynoraState (TypedDict — 12 fields flowing through)│
-  │  ┌─────────────────────────────────────────────┐    │
-  │  │ query · zone_ids · time_window · predictions│    │
-  │  │ anomalies · rag_context · rag_sources       │    │
-  │  │ recommendation · report                     │    │
-  │  │ needs_human_review · approved · agent_trace │    │ 
-  │  └─────────────────────────────────────────────┘    │
+  │  ┌─────────────────────────────────────────────┐   │
+  │  │ query · zone_ids · time_window · predictions│   │
+  │  │ anomalies · rag_context · rag_sources       │   │
+  │  │ recommendation · report                     │   │
+  │  │ needs_human_review · approved · agent_trace │   │
+  │  └─────────────────────────────────────────────┘   │
   │                                                     │
-  │  ┌─────────────────┐                                │
-  │  │ demand_forecaster│  Node 1                       │
-  │  │                 │  ─ Parse zones + time window   │
-  │  │  .pkl models    │  ─ Load trained pkl models     │
-  │  │  (features: 30) │  ─ Predict occupancy + volume  │
-  │  │  (or fallback)  │  ─ Statistical fallback if     │
+  │  ┌─────────────────┐                               │
+  │  │ demand_forecaster│  Node 1                      │
+  │  │                 │  ─ Parse zones + time window  │
+  │  │  .pkl models    │  ─ Load trained pkl models    │
+  │  │  (features: 30) │  ─ Predict occupancy + volume │
+  │  │  (or fallback)  │  ─ Statistical fallback if    │
   │  └────────┬────────┘     LFS stubs detected         │
   │           │                                         │
   │           ▼                                         │
-  │  ┌─────────────────┐                                │
-  │  │ anomaly_detector│  Node 2                        │
-  │  │                 │  ─ occ > 85% → ANOMALY         │
-  │  │  Thresholds:    │  ─ vol > p90 → ANOMALY         │
-  │  │  occ  > 85%     │  ─ surge > 40% → CRITICAL      │
-  │  │  vol  > p90     │  ─ Assigns severity:           │
-  │  │  surge> 40%     │    critical / high / medium    │
-  │  └────────┬────────┘                                │
+  │  ┌─────────────────┐                               │
+  │  │ anomaly_detector│  Node 2                       │
+  │  │                 │  ─ occ > 85% → ANOMALY        │
+  │  │  Thresholds:    │  ─ vol > p90 → ANOMALY        │
+  │  │  occ  > 85%     │  ─ surge > 40% → CRITICAL     │
+  │  │  vol  > p90     │  ─ Assigns severity:          │
+  │  │  surge> 40%     │    critical / high / medium   │
+  │  └────────┬────────┘                               │
   │           │                                         │
   │           ▼                                         │
-  │  ┌─────────────────┐     ┌───────────────────────┐  │
-  │  │  rag_retriever  │────▶│   ChromaDB            │  │
+  │  ┌─────────────────┐     ┌──────────────────────┐  │
+  │  │  rag_retriever  │────▶│   ChromaDB           │  │
   │  │                 │     │   Vector Store        │  │
   │  │  Node 3         │     │   data/vectorstore/   │  │
-  │  │  ─ Embed query  │◀────│                       │  │
+  │  │  ─ Embed query  │◀────│                      │  │
   │  │  ─ Retrieve     │     │  Documents:           │  │
   │  │    top-k docs   │     │  • 275 zone profiles  │  │
   │  │  ─ Zone-level   │     │  • 275 demand stats   │  │
   │  │    context      │     │  • 5 planning reports │  │
   │  └────────┬────────┘     │  • Model metrics      │  │
-  │           │              │  • Feature importance │  │
-  │           │              │                       │  │
-  │           │              │  Embeddings:          │  │
-  │           │              │  all-MiniLM-L6-v2     │  │
-  │           │              │  (local, no API key)  │  │
-  │           │              └───────────────────────┘  │
+  │           │              │  • Feature importance  │  │
+  │           │              │                        │  │
+  │           │              │  Embeddings:           │  │
+  │           │              │  all-MiniLM-L6-v2      │  │
+  │           │              │  (local, no API key)   │  │
+  │           │              └──────────────────────┘  │
   │           ▼                                         │
-  │  ┌─────────────────┐                                │
-  │  │ planning_agent  │  Node 4                        │
-  │  │                 │  ─ Constructs rich prompt from │
-  │  │  LLM:           │    predictions + anomalies +   │
-  │  │  Claude         │    RAG context                 │
-  │  │  claude-sonnet  │  ─ Calls Anthropic / OpenAI    │
-  │  │  -4-20250514    │  ─ Rule-based fallback if      │
-  │  │  (or GPT-4o)    │    no API key set              │
-  │  └────────┬────────┘                                │
+  │  ┌─────────────────┐                               │
+  │  │ planning_agent  │  Node 4                       │
+  │  │                 │  ─ Constructs rich prompt from│
+  │  │  LLM:           │    predictions + anomalies +  │
+  │  │  Claude         │    RAG context                │
+  │  │  claude-sonnet  │  ─ Calls Anthropic / OpenAI  │
+  │  │  -4-20250514    │  ─ Rule-based fallback if     │
+  │  │  (or GPT-4o)    │    no API key set             │
+  │  └────────┬────────┘                               │
   │           │                                         │
   │           ▼                                         │
-  │  ┌─────────────────┐                                │
-  │  │ report_generator│  Node 5                        │
-  │  │                 │  ─ Structured JSON report      │
-  │  │                 │  ─ summary_statistics          │
-  │  │                 │  ─ anomalies list              │
-  │  │                 │  ─ predictions_by_zone         │
-  │  │                 │  ─ rag_sources_used            │
-  │  │                 │  ─ model_info                  │
-  │  └────────┬────────┘                                │
+  │  ┌─────────────────┐                               │
+  │  │ report_generator│  Node 5                       │
+  │  │                 │  ─ Structured JSON report     │
+  │  │                 │  ─ summary_statistics         │
+  │  │                 │  ─ anomalies list             │
+  │  │                 │  ─ predictions_by_zone        │
+  │  │                 │  ─ rag_sources_used           │
+  │  │                 │  ─ model_info                 │
+  │  └────────┬────────┘                               │
   │           │                                         │
   │           ▼                                         │
-  │  ┌─────────────────┐                                │
-  │  │human_review_gate│  Node 6 — Conditional          │
-  │  │                 │                                │
-  │  │  Triggers if:   │                                │
-  │  │  • Surge > 40%  │                                │
-  │  │  • Piles > 10   │                                │
-  │  │  • Criticals>5  │                                │
-  │  └──┬──────────┬───┘                                │
+  │  ┌─────────────────┐                               │
+  │  │human_review_gate│  Node 6 — Conditional         │
+  │  │                 │                               │
+  │  │  Triggers if:   │                               │
+  │  │  • Surge > 40%  │                               │
+  │  │  • Piles > 10   │                               │
+  │  │  • Criticals>5  │                               │
+  │  └──┬──────────┬───┘                               │
   │     │          │                                    │
   └─────┼──────────┼────────────────────────────────────┘
         │          │
@@ -254,14 +254,14 @@
   Top-K Documents Retrieved
   ┌──────────────────────────────────────────────────┐
   │  [zone_profile_106]                              │
-  │  Zone 106 — occ mean 49.2%, 96 piles, high       │
+  │  Zone 106 — occ mean 49.2%, 96 piles, high      │
   │                                                  │
   │  [synthetic_report_000]                          │
   │  High-Demand Zone Infrastructure Report:         │
-  │  Add 8–12 DC fast-charging piles…                │
+  │  Add 8–12 DC fast-charging piles…               │
   │                                                  │
   │  [zone_demand_stats_106]                         │
-  │  p90 occ = 56%, p90 vol = 115 kWh                │
+  │  p90 occ = 56%, p90 vol = 115 kWh               │
   │  High-risk flag: YES                             │
   └──────────────────────────────────────────────────┘
          │
@@ -326,7 +326,7 @@
   └──────────────────────────┬─────────────────────────────────┘
                              │
              ┌───────────────▼──────────────────┐
-             │         LangGraph Agent          │
+             │         LangGraph Agent           │
              │                                  │
              │  1. Parse query → zones, window  │
              │  2. Predict demand per zone      │──▶ .pkl models
@@ -339,15 +339,15 @@
                              │
   ┌──────────────────────────▼─────────────────────────────────┐
   │  OUTPUT (Streamlit Page)                                   │
-  │  • Live step-by-step node trace                            │
-  │  • Predicted demand heatmap (occupancy % by zone)          │
-  │  • Volume chart (kWh by zone)                              │
-  │  • Demand surge vs baseline chart                          │
-  │  • Anomaly alert cards (CRITICAL / HIGH / MEDIUM)          │
-  │  • RAG source accordion (retrieved documents)              │
-  │  • Infrastructure recommendation (formatted markdown)      │
-  │  • Human approval widget (if triggered)                    │
-  │  • Download: JSON report + Markdown report                 │
+  │  • Live step-by-step node trace                           │
+  │  • Predicted demand heatmap (occupancy % by zone)         │
+  │  • Volume chart (kWh by zone)                             │
+  │  • Demand surge vs baseline chart                         │
+  │  • Anomaly alert cards (CRITICAL / HIGH / MEDIUM)         │
+  │  • RAG source accordion (retrieved documents)             │
+  │  • Infrastructure recommendation (formatted markdown)     │
+  │  • Human approval widget (if triggered)                   │
+  │  • Download: JSON report + Markdown report                │
   └────────────────────────────────────────────────────────────┘
 ```
 
